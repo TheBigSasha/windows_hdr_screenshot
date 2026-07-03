@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual env
+.venv/
+venv/
+
+# Local scratch / test outputs
+scratch_out/
+*.exr
+*.heic
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

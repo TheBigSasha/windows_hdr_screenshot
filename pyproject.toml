@@ -1,0 +1,26 @@
+[project]
+name = "hdrshot"
+version = "0.1.0"
+description = "True HDR screenshots on Windows — gain-map UltraHDR JPEG, OpenEXR and 10-bit PQ HEIC, with SDR fallbacks."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=2.0",
+    "Pillow>=11.0",
+    "OpenEXR>=3.3",
+    "pillow-avif-plugin>=1.5",
+    "pillow-heif>=1.0",
+    "PySide6>=6.7",
+    "comtypes>=1.4",
+]
+
+[project.scripts]
+hdrshot = "hdrshot.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["hdrshot", "hdrshot.encoders", "hdrshot.ui"]
