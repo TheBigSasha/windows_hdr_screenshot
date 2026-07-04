@@ -10,8 +10,11 @@ installed, :func:`available` returns ``False`` and the pipeline falls back to an
 """
 from __future__ import annotations
 
-# imagecodecs is the optional [avif-hdr] extra; absence is handled at runtime.
-# pyright: reportMissingImports=false
+# imagecodecs is the optional [avif-hdr] extra; absence is handled at runtime, and
+# its avif_encode kwargs vary by version (older wheels lack the nclx params), so we
+# don't let the type checker be strict about that call.
+# pyright: reportMissingImports=false, reportCallIssue=false
+import inspect
 import logging
 import struct
 
@@ -27,12 +30,24 @@ MC_BT2020_NCL = 9  # H.273 matrix coefficients (BT.2020 non-constant luminance)
 
 
 def available() -> bool:
-    """True if imagecodecs with a working AVIF codec is importable."""
+    """True if imagecodecs has a working AVIF codec that accepts the nclx params.
+
+    Older imagecodecs wheels (e.g. the last ones built for Python 3.10) ship an
+    ``avif_encode`` without the ``primaries``/``transfer``/``matrix`` kwargs, so
+    they can't tag 10-bit PQ. In that case we report unavailable and the pipeline
+    falls back to SDR AVIF rather than raising.
+    """
     try:
         import imagecodecs
     except Exception:
         return False
-    return bool(getattr(getattr(imagecodecs, "AVIF", None), "available", False))
+    if not bool(getattr(getattr(imagecodecs, "AVIF", None), "available", False)):
+        return False
+    try:
+        params = inspect.signature(imagecodecs.avif_encode).parameters
+    except (TypeError, ValueError):
+        return True  # non-introspectable Cython builtin — assume a modern build
+    return "primaries" in params
 
 
 def write_avif_pq(path: str, linear: np.ndarray, quality: int = 90) -> None:

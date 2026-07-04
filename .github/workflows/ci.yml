@@ -33,6 +33,10 @@ jobs:
       - name: Ruff (lint + format check)
         run: .venv/Scripts/python -m ruff check .
       - name: Pyright (type check)
+        # Run once, on 3.12: the latest imagecodecs (with the nclx kwargs used by
+        # the HDR-AVIF encoder) has no 3.10 wheel, so an older stub there yields
+        # spurious signature errors.
+        if: matrix.python == '3.12'
         run: .venv/Scripts/python -m pyright
       - name: Pytest
         run: .venv/Scripts/python -m pytest -q
