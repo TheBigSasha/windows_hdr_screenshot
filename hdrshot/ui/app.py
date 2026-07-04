@@ -1,17 +1,46 @@
-"""Main application: toolbar window, tray icon, and capture orchestration."""
+"""Main application: toolbar window, tray icon, and capture orchestration.
+
+Capture and encode run on worker threads (issue #16); global hotkeys (#2),
+post-capture toasts (#3), a Preferences window (#5) and configurable save
+paths/templates (#4) are wired in through the persisted `Config`.
+"""
 from __future__ import annotations
 
+import logging
 import sys
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QIcon,
-                           QLinearGradient, QPainter, QPixmap)
-from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu, QPushButton,
-                               QSystemTrayIcon, QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt, QThreadPool, QTimer
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QFont,
+    QGuiApplication,
+    QIcon,
+    QLinearGradient,
+    QPainter,
+    QPixmap,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QPushButton,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+)
 
-from .. import capture, color, displays, pipeline
+from ..config import Config
+from ..core import pipeline
+from ..hotkeys import HotkeyManager
 from .overlay import RegionSelector
 from .preview import PreviewWindow
+from .settings import PreferencesDialog
+from .toast import Toast
+from .workers import CaptureWorker
+
+log = logging.getLogger(__name__)
 
 STYLE = """
 * { font-family: 'Segoe UI'; color: #e8e8ea; }
@@ -35,9 +64,12 @@ QPushButton:hover { background: #33333b; border-color: #4a4a54; }
 QPushButton#primary, QPushButton#capture { background: #0a84ff; border: none; color: white;
                                             font-weight: 600; }
 QPushButton#primary:hover, QPushButton#capture:hover { background: #3a9bff; }
+QPushButton#ghost { background: transparent; border: 1px solid #3a3a42; }
 QComboBox { background: #2a2a30; border: 1px solid #3a3a42; border-radius: 6px; padding: 5px 8px; }
 QComboBox QAbstractItemView { background: #26262b; selection-background-color: #0a84ff; }
+QLineEdit, QSpinBox { background: #2a2a30; border: 1px solid #3a3a42; border-radius: 6px; padding: 5px 8px; }
 QFrame#sep { color: #2c2c31; }
+QCheckBox { color: #e8e8ea; }
 """
 
 
@@ -60,12 +92,12 @@ def make_icon() -> QIcon:
 
 
 class MainWindow(QWidget):
-    def __init__(self, controller: "HdrShotApp"):
+    def __init__(self, controller: HdrShotApp):
         super().__init__(None)
         self.controller = controller
         self.setObjectName("main")
         self.setWindowTitle("HDR Shot")
-        self.setFixedWidth(420)
+        self.setFixedWidth(440)
         self._build()
         self.refresh_status()
 
@@ -81,9 +113,15 @@ class MainWindow(QWidget):
         header.addStretch(1)
         self.pill = QLabel("…")
         header.addWidget(self.pill)
+        gear = QPushButton("⚙")
+        gear.setObjectName("ghost")
+        gear.setFixedWidth(40)
+        gear.setToolTip("Preferences")
+        gear.clicked.connect(self.controller.open_preferences)
+        header.addWidget(gear)
         root.addLayout(header)
 
-        sub = QLabel("True HDR screenshots — gain-map JPEG, EXR or PQ HEIC on HDR "
+        sub = QLabel("True HDR screenshots — gain-map JPEG, EXR, PQ HEIC/AVIF on HDR "
                      "displays, standard formats on SDR.")
         sub.setObjectName("subtle")
         sub.setWordWrap(True)
@@ -105,7 +143,7 @@ class MainWindow(QWidget):
         root.addWidget(self.foot)
 
     def refresh_status(self):
-        disps = displays.enumerate_displays()
+        disps = self.controller.backend.enumerate_displays()
         primary = next((d for d in disps if d.is_primary), disps[0] if disps else None)
         if primary is None:
             self.pill.setText("no display")
@@ -125,23 +163,30 @@ class MainWindow(QWidget):
         self.pill.setStyleSheet("")            # re-evaluate object-name style
         self.pill.style().unpolish(self.pill)
         self.pill.style().polish(self.pill)
-        n = len(disps)
-        self.foot.setText(f"{note}\nSaves to Pictures\\Screenshots · {n} display"
-                          f"{'s' if n != 1 else ''} detected.")
+        # Per-display state (issue #17): don't hide a mixed HDR/SDR setup.
+        per = "   ·   ".join(f"{d.friendly_name}: {d.state_label}" for d in disps)
+        hk = self.controller.config.get("hotkey_region")
+        self.foot.setText(f"{note}\n{per}\nHotkey: {hk}  ·  saves to your Pictures\\Screenshots.")
 
 
 class HdrShotApp:
-    def __init__(self, app: QApplication):
+    def __init__(self, app: QApplication, backend):
         self.app = app
+        self.backend = backend
+        self.config = Config.load()
+        self.pool = QThreadPool.globalInstance()
         self.app.setStyleSheet(STYLE)
         self.app.setWindowIcon(make_icon())
         self.window = MainWindow(self)
         self._selector: RegionSelector | None = None
         self._preview: PreviewWindow | None = None
+        self._toast: Toast | None = None
         self._caps = None
         self._disps = None
         self._pending_fullscreen = False
+        self._capturing = False
         self._build_tray()
+        self._setup_hotkeys()
 
     def _build_tray(self):
         self.tray = QSystemTrayIcon(make_icon(), self.app)
@@ -149,16 +194,41 @@ class HdrShotApp:
         menu = QMenu()
         act_new = QAction("New Screenshot", self.app)
         act_new.triggered.connect(lambda: self.start_capture())
+        act_screen = QAction("Capture Whole Screen", self.app)
+        act_screen.triggered.connect(lambda: self.start_capture(fullscreen=True))
+        timed = QMenu("Timed capture", menu)
+        for secs in (3, 5, 10):
+            a = QAction(f"Region after {secs}s", self.app)
+            a.triggered.connect(lambda _=False, s=secs: self._timed_capture(s))
+            timed.addAction(a)
         act_show = QAction("Open HDR Shot", self.app)
         act_show.triggered.connect(self.show_window)
+        act_prefs = QAction("Preferences…", self.app)
+        act_prefs.triggered.connect(self.open_preferences)
         act_quit = QAction("Quit", self.app)
-        act_quit.triggered.connect(self.app.quit)
-        for a in (act_new, act_show, act_quit):
-            menu.addAction(a)
+        act_quit.triggered.connect(self.quit)
+        menu.addAction(act_new)
+        menu.addAction(act_screen)
+        menu.addMenu(timed)
+        menu.addSeparator()
+        menu.addAction(act_show)
+        menu.addAction(act_prefs)
+        menu.addSeparator()
+        menu.addAction(act_quit)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(
             lambda r: self.show_window() if r == QSystemTrayIcon.Trigger else None)
         self.tray.show()
+
+    def _setup_hotkeys(self):
+        self.hotkeys = HotkeyManager()
+        self.hotkeys.register(self.config.get("hotkey_region"), lambda: self.start_capture())
+        self.hotkeys.register(self.config.get("hotkey_screen"),
+                              lambda: self.start_capture(fullscreen=True))
+
+    def _reload_hotkeys(self):
+        self.hotkeys.unregister_all()
+        self._setup_hotkeys()
 
     def show_window(self):
         self.window.refresh_status()
@@ -166,78 +236,133 @@ class HdrShotApp:
         self.window.raise_()
         self.window.activateWindow()
 
+    def open_preferences(self):
+        dlg = PreferencesDialog(self.config, on_apply=self._on_prefs_applied, parent=self.window)
+        dlg.setStyleSheet(STYLE)
+        dlg.exec()
+
+    def _on_prefs_applied(self):
+        self._reload_hotkeys()
+        self.window.refresh_status()
+
+    def quit(self):
+        try:
+            self.hotkeys.unregister_all()
+        finally:
+            self.app.quit()
+
     # -- capture flow ------------------------------------------------------ #
+    def _timed_capture(self, seconds: int):
+        self.window.hide()
+        QTimer.singleShot(seconds * 1000, lambda: self.start_capture())
+
     def start_capture(self, fullscreen: bool = False):
+        if self._capturing or self._selector is not None:
+            return                                       # already mid-capture
+        self._capturing = True
         self._pending_fullscreen = fullscreen
         self.window.hide()
-        QTimer.singleShot(180, self._do_capture)   # let the window disappear
+        QTimer.singleShot(140, self._spawn_capture)      # let the window disappear
 
-    def _do_capture(self):
-        try:
-            self._caps = capture.capture_all()
-        except Exception as e:
-            self.tray.showMessage("HDR Shot", f"Capture failed: {e}",
-                                  QSystemTrayIcon.Warning)
-            self.show_window()
+    def _spawn_capture(self):
+        worker = CaptureWorker(self.backend)
+        worker.signals.finished.connect(self._on_captured)
+        worker.signals.error.connect(self._on_capture_error)
+        self.pool.start(worker)
+
+    def _on_capture_error(self, msg: str):
+        self._capturing = False
+        self.tray.showMessage("HDR Shot", f"Capture failed: {msg}", QSystemTrayIcon.Warning)
+        self.show_window()
+
+    def _on_captured(self, payload):
+        caps, disps, previews = payload
+        self._caps, self._disps = caps, disps
+        if not disps:
+            self._on_capture_error("no displays detected")
             return
-        self._disps = displays.enumerate_displays()
 
         if self._pending_fullscreen:
-            primary = next((d for d in self._disps if d.is_primary), self._disps[0])
+            primary = next((d for d in disps if d.is_primary), disps[0])
             self._on_region(primary.gdi_name, None)
             return
 
-        previews = {name: color.scrgb_to_preview_u8(
-                        mc.linear, self._white_for(name))
-                    for name, mc in self._caps.items()}
-        lookup = self._screen_lookup(self._disps)
-        self._selector = RegionSelector(previews, lookup)
+        lookup = self._screen_lookup(disps)
+        linears = {name: mc.linear for name, mc in caps.items()}
+        whites = {d.gdi_name: d.sdr_white_nits for d in disps}
+        monitor_rects = {name: (mc.x, mc.y, mc.width, mc.height) for name, mc in caps.items()}
+        self._selector = RegionSelector(previews, lookup, linears=linears,
+                                        whites=whites, monitor_rects=monitor_rects)
         self._selector.on_region = self._on_region
         self._selector.on_cancel = self._on_cancel
         self._selector.show()
 
-    def _white_for(self, gdi_name: str) -> float:
-        for d in self._disps:
-            if d.gdi_name == gdi_name:
-                return d.sdr_white_nits
-        return 80.0
-
     def _screen_lookup(self, disps):
+        """Match a GDI device name to its QScreen deterministically (issue #17).
+
+        On Windows ``QScreen.name()`` returns the GDI device name (``\\\\.\\DISPLAY1``)
+        — the exact key everything else joins on. Fall back to a positional zip
+        only when that fails, and log it.
+        """
         screens = QGuiApplication.screens()
-        by_name: dict = {}
-        for s in screens:
-            by_name.setdefault(s.name(), []).append(s)
+        by_gdi = {s.name(): s for s in screens}
         s_sorted = sorted(screens, key=lambda s: (s.geometry().x(), s.geometry().y()))
         d_sorted = sorted(disps, key=lambda d: (d.x, d.y))
-        pos_map = {d.gdi_name: s for d, s in zip(d_sorted, s_sorted)}
+        pos_map = {d.gdi_name: s for d, s in zip(d_sorted, s_sorted, strict=False)}
 
         def lookup(gdi):
-            d = next((x for x in disps if x.gdi_name == gdi), None)
-            if d and len(by_name.get(d.friendly_name, [])) == 1:
-                return by_name[d.friendly_name][0]
+            if gdi in by_gdi:
+                return by_gdi[gdi]
+            log.warning("QScreen name did not match %s; using positional fallback", gdi)
             return pos_map.get(gdi)
         return lookup
 
     def _on_region(self, gdi_name, buffer_rect):
-        result = pipeline.capture_buffer_region(self._caps, self._disps, gdi_name, buffer_rect)
-        self._preview = PreviewWindow(result)
+        self._selector = None
+        try:
+            result = pipeline.capture_buffer_region(self._caps, self._disps, gdi_name, buffer_rect)
+        except Exception as e:
+            self._on_capture_error(str(e))
+            return
+        # Release the full-monitor scRGB float32 buffers now. A region crop is an
+        # independent copy, so every monitor is freed; a whole-screen grab aliases
+        # the selected display (kept alive by the preview) but frees the others.
+        self._caps = None
+        self._capturing = False
+        self._preview = PreviewWindow(result, self.config, on_saved=self._on_saved)
+        self._preview.setStyleSheet(STYLE)
         self._preview.show()
         self._preview.raise_()
         self._preview.activateWindow()
-        self._selector = None
+
+    def _on_saved(self, info: dict, preview_u8):
+        if not self.config.get("notifications"):
+            return
+        is_hdr = bool(info.get("hdr"))
+        peak = float(info.get("peak_nits", 0.0) or 0.0)
+        self._toast = Toast(preview_u8, info["path"], is_hdr, peak)
+        self._toast.popup()
 
     def _on_cancel(self):
         self._selector = None
+        self._caps = None
+        self._capturing = False
         self.show_window()
 
 
 def main() -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-    displays.set_process_dpi_aware()
+    from ..backends import UnsupportedPlatformError, get_backend
+    try:
+        backend = get_backend()
+    except UnsupportedPlatformError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    backend.set_process_dpi_aware()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    controller = HdrShotApp(app)
+    controller = HdrShotApp(app, backend)
     controller.show_window()
     return app.exec()
 

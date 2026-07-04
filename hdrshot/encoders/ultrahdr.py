@@ -17,7 +17,11 @@ import struct
 import numpy as np
 from PIL import Image
 
-from .. import color
+from ..core import color
+
+
+class UltraHDREncodeError(RuntimeError):
+    """A structural invariant of the UltraHDR container was violated."""
 
 APP1, APP2, SOI = b"\xFF\xE1", b"\xFF\xE2", b"\xFF\xD8"
 XMP_NS = b"http://ns.adobe.com/xap/1.0/\x00"  # 29 bytes incl NUL
@@ -58,12 +62,14 @@ def compute_gainmap(linear: np.ndarray, sdr_white_nits: float,
     if downscale > 1:
         img = Image.fromarray(gm_u8, "L")
         img = img.resize((max(1, img.width // downscale), max(1, img.height // downscale)),
-                         Image.BILINEAR)
+                         Image.Resampling.BILINEAR)
         gm_u8 = np.asarray(img)
 
-    meta = dict(gain_min_log2=gain_min_log2, gain_max_log2=gain_max_log2, gamma=1.0,
-                offset_sdr=OFFSET, offset_hdr=OFFSET,
-                cap_min_log2=max(gain_min_log2, 0.0), cap_max_log2=gain_max_log2)
+    meta = {
+        "gain_min_log2": gain_min_log2, "gain_max_log2": gain_max_log2, "gamma": 1.0,
+        "offset_sdr": OFFSET, "offset_hdr": OFFSET,
+        "cap_min_log2": max(gain_min_log2, 0.0), "cap_max_log2": gain_max_log2,
+    }
     return gm_u8, meta
 
 
@@ -99,7 +105,7 @@ def _app1_xmp(xmp_xml: str) -> bytes:
 
 def _encode_jpeg(pil_img: Image.Image, quality: int, icc: bytes | None = None) -> bytes:
     buf = io.BytesIO()
-    kw = dict(format="JPEG", quality=quality, subsampling=0)
+    kw = {"format": "JPEG", "quality": quality, "subsampling": 0}
     if icc:
         kw["icc_profile"] = icc
     pil_img.save(buf, **kw)
@@ -107,7 +113,8 @@ def _encode_jpeg(pil_img: Image.Image, quality: int, icc: bytes | None = None) -
 
 
 def _after_soi(jpeg: bytes) -> bytes:
-    assert jpeg[:2] == SOI, "expected JPEG SOI"
+    if jpeg[:2] != SOI:
+        raise UltraHDREncodeError("expected JPEG SOI marker at start of encoded image")
     return jpeg[2:]
 
 
@@ -136,7 +143,10 @@ def write_ultrahdr(path: str, linear: np.ndarray, sdr_white_nits: float = 80.0,
         f'hdrgm:HDRCapacityMax="{meta["cap_max_log2"]:.6f}" '
         'hdrgm:BaseRenditionIsHDR="False"/></rdf:RDF></x:xmpmeta>')
     gm_raw = _encode_jpeg(Image.fromarray(gm_u8, "L"), quality)
-    gainmap_jpeg = SOI + _app1_xmp(gm_xmp) + _after_soi(gm_raw)
+    # Gain-map image: SOI + hdrgm XMP + ISO 21496-1 full metadata block + scan.
+    from . import iso_gainmap
+    gainmap_jpeg = (SOI + _app1_xmp(gm_xmp) + iso_gainmap.full_segment(meta)
+                    + _after_soi(gm_raw))
     gainmap_len = len(gainmap_jpeg)
 
     prim_xmp = (
@@ -156,14 +166,24 @@ def write_ultrahdr(path: str, linear: np.ndarray, sdr_white_nits: float = 80.0,
 
     base_body = _after_soi(_encode_jpeg(Image.fromarray(base_u8[..., :3], "RGB"), quality))
 
-    MPF_SEG_LEN = 90
-    primary_image_size = 2 + len(prim_xmp_app1) + MPF_SEG_LEN + len(base_body)
-    base_of_mpf = 2 + len(prim_xmp_app1) + 8
-    gainmap_soi_abs = primary_image_size
-    gainmap_offset = gainmap_soi_abs - base_of_mpf
+    # Base image also carries a version-only ISO 21496-1 APP2 stub (before MPF) so
+    # strict Apple readers detect the ISO gain map.
+    iso_stub = iso_gainmap.version_stub_segment()
+
+    # The MPF APP2 segment has a fixed structure (3 IFD entries + 2 fixed-width
+    # MP entries), so its length is independent of the offset values it carries.
+    # Build once with placeholder values to measure it, derive the offsets from
+    # that measured length, then rebuild for real — no hard-coded byte count.
+    mpf_seg_len = len(_build_mpf_app2(0, 0, 0))
+    lead = 2 + len(prim_xmp_app1) + len(iso_stub)          # SOI + APP1 XMP + ISO stub
+    primary_image_size = lead + mpf_seg_len + len(base_body)
+    base_of_mpf = lead + 8                                 # MPF offsets are relative to the TIFF header
+    gainmap_offset = primary_image_size - base_of_mpf      # gain-map SOI sits right after the primary
     mpf = _build_mpf_app2(primary_image_size, gainmap_len, gainmap_offset)
-    assert len(mpf) == MPF_SEG_LEN, len(mpf)
+    if len(mpf) != mpf_seg_len:
+        raise UltraHDREncodeError(
+            f"MPF segment length is not fixed ({mpf_seg_len} -> {len(mpf)}); offset math invalid")
 
     with open(path, "wb") as f:
-        f.write(SOI + prim_xmp_app1 + mpf + base_body + gainmap_jpeg)
+        f.write(SOI + prim_xmp_app1 + iso_stub + mpf + base_body + gainmap_jpeg)
     return meta

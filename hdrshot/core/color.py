@@ -17,6 +17,16 @@ import numpy as np
 
 SCRGB_REFERENCE_NITS = 80.0
 
+# --------------------------------------------------------------------------- #
+# HDR-content detection thresholds.
+# These gate the entire auto-format decision (HDR -> UltraHDR, SDR -> PNG), so
+# they are named and documented rather than inlined. Values are in "paper white"
+# units where 1.0 == the display's SDR white level.
+# --------------------------------------------------------------------------- #
+HDR_DIFFUSE_MARGIN = 1.02       # a pixel's luma must exceed paper white by this to count as HDR
+HDR_PEAK_THRESHOLD = 1.05       # the brightest channel must exceed paper white by this
+HDR_MIN_PIXEL_FRACTION = 1e-5   # ...and at least this fraction of pixels must be HDR
+
 
 # --------------------------------------------------------------------------- #
 # sRGB transfer
@@ -71,12 +81,12 @@ def hdr_stats(linear: np.ndarray, sdr_white_nits: float) -> dict:
     lum = norm @ np.array([0.2627, 0.6780, 0.0593], np.float32)  # BT.2020-ish luma
     peak = float(np.max(norm)) if norm.size else 0.0
     # fraction of pixels meaningfully above paper white
-    frac = float(np.mean(lum > 1.02)) if lum.size else 0.0
+    frac = float(np.mean(lum > HDR_DIFFUSE_MARGIN)) if lum.size else 0.0
     return {
         "peak_ratio": peak,                                  # brightest channel / paper white
         "peak_nits": float(np.max(rgb)) * SCRGB_REFERENCE_NITS if rgb.size else 0.0,
         "hdr_pixel_fraction": frac,
-        "has_hdr": peak > 1.05 and frac > 1e-5,
+        "has_hdr": peak > HDR_PEAK_THRESHOLD and frac > HDR_MIN_PIXEL_FRACTION,
     }
 
 
