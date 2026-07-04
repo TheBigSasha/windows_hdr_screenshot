@@ -1,0 +1,71 @@
+name: Release
+
+# Build a standalone Windows bundle and attach it to a GitHub Release when a
+# version tag is pushed (e.g. `git tag v0.2.0 && git push --tags`).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-bundle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install app + PyInstaller
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # Bundle the GUI. HEIC (x265/GPL) and imagecodecs are intentionally NOT
+          # installed here so they are not bundled (see THIRD_PARTY_NOTICES.md).
+          python -m pip install -e .[gui] pyinstaller
+
+      - name: Build onedir bundle
+        working-directory: packaging
+        run: pyinstaller hdrshot.spec --noconfirm
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          V=$(python -c "import hdrshot; print(hdrshot.__version__)")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Zip the bundle
+        shell: pwsh
+        run: |
+          $name = "HDRShot-${{ steps.ver.outputs.version }}-win64"
+          Copy-Item LICENSE, THIRD_PARTY_NOTICES.md, README.md packaging/dist/HDRShot/
+          Compress-Archive -Path packaging/dist/HDRShot/* -DestinationPath "$name.zip"
+          echo "ASSET=$name.zip" >> $env:GITHUB_ENV
+
+      - name: Smoke-test the exe (CLI path, no desktop needed)
+        shell: pwsh
+        run: packaging/dist/HDRShot/HDRShot.exe --version
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          body: |
+            Standalone Windows build of HDR Shot ${{ steps.ver.outputs.version }}.
+
+            **Unzip and run `HDRShot.exe`** — no Python needed. Unsigned, so
+            SmartScreen may warn on first launch (More info → Run anyway).
+
+            HDR outputs in this bundle: UltraHDR JPEG, OpenEXR. For 10-bit PQ HEIC
+            or HDR AVIF, `pip install "hdrshot[heic]"` / `"hdrshot[avif-hdr]"`.

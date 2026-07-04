@@ -1,0 +1,25 @@
+PackageIdentifier: TheBigSasha.HDRShot
+PackageVersion: "0.2.0"
+PackageLocale: en-US
+Publisher: TheBigSasha
+PublisherUrl: https://github.com/TheBigSasha
+PackageName: HDR Shot
+PackageUrl: https://github.com/TheBigSasha/windows_hdr_screenshot
+License: MIT
+LicenseUrl: https://github.com/TheBigSasha/windows_hdr_screenshot/blob/main/LICENSE
+Copyright: Copyright (c) 2026 Sasha (TheBigSasha)
+ShortDescription: True HDR screenshots on Windows — gain-map UltraHDR JPEG, OpenEXR and more.
+Description: |-
+  HDR Shot captures the desktop in scRGB FP16 (the color space Windows composites
+  HDR in) and saves it with highlights intact — as a gain-map UltraHDR JPEG,
+  OpenEXR, 10-bit PQ HEIC or AVIF — with PNG/JPEG/AVIF SDR fallbacks. Includes a
+  Snipping-Tool-style capture UI and a machine-readable CLI for agents.
+Moniker: hdrshot
+Tags:
+  - hdr
+  - screenshot
+  - ultrahdr
+  - gain-map
+  - capture
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
