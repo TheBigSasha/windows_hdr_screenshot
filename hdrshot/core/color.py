@@ -115,9 +115,10 @@ def pq_oetf(nits: np.ndarray) -> np.ndarray:
 
 
 def scrgb_to_pq_bt2020_u16(linear: np.ndarray, bit_depth: int = 10) -> np.ndarray:
-    """scRGB FP16 -> BT.2020 PQ code values, left-justified in uint16.
+    """scRGB FP16 -> BT.2020 PQ code values in uint16.
 
-    Returns (H, W, 3) uint16 with ``bit_depth`` significant bits.
+    Returns (H, W, 3) uint16 holding right-justified code values in
+    ``[0, 2**bit_depth - 1]`` (not shifted into the high bits).
     """
     rgb = np.clip(linear[..., :3].astype(np.float32), 0.0, None)
     nits = rgb * SCRGB_REFERENCE_NITS

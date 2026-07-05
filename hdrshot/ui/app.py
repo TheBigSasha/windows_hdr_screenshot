@@ -179,7 +179,7 @@ class HdrShotApp:
         self.app.setWindowIcon(make_icon())
         self.window = MainWindow(self)
         self._selector: RegionSelector | None = None
-        self._preview: PreviewWindow | None = None
+        self._previews: list[PreviewWindow] = []
         self._toast: Toast | None = None
         self._caps = None
         self._disps = None
@@ -221,10 +221,21 @@ class HdrShotApp:
         self.tray.show()
 
     def _setup_hotkeys(self):
-        self.hotkeys = HotkeyManager()
-        self.hotkeys.register(self.config.get("hotkey_region"), lambda: self.start_capture())
-        self.hotkeys.register(self.config.get("hotkey_screen"),
-                              lambda: self.start_capture(fullscreen=True))
+        # One manager for the app's lifetime: a new manager per reload would
+        # install a fresh native event filter each time and never remove the old.
+        if not hasattr(self, "hotkeys"):
+            self.hotkeys = HotkeyManager()
+        failed = []
+        for spec, cb in ((self.config.get("hotkey_region"),
+                          lambda: self.start_capture()),
+                         (self.config.get("hotkey_screen"),
+                          lambda: self.start_capture(fullscreen=True))):
+            if spec and not self.hotkeys.register(spec, cb):
+                failed.append(str(spec))
+        if failed:
+            self.tray.showMessage(
+                "HDR Shot", "Could not register hotkey(s): " + ", ".join(failed) +
+                " (invalid or already in use)", QSystemTrayIcon.Warning)
 
     def _reload_hotkeys(self):
         self.hotkeys.unregister_all()
@@ -272,6 +283,7 @@ class HdrShotApp:
 
     def _on_capture_error(self, msg: str):
         self._capturing = False
+        self._caps = None                        # drop any full-monitor buffers
         self.tray.showMessage("HDR Shot", f"Capture failed: {msg}", QSystemTrayIcon.Warning)
         self.show_window()
 
@@ -300,20 +312,25 @@ class HdrShotApp:
     def _screen_lookup(self, disps):
         """Match a GDI device name to its QScreen deterministically (issue #17).
 
-        On Windows ``QScreen.name()`` returns the GDI device name (``\\\\.\\DISPLAY1``)
-        — the exact key everything else joins on. Fall back to a positional zip
-        only when that fails, and log it.
+        Qt 6 ``QScreen.name()`` returns the *friendly* monitor name ("M27P6"), not
+        the GDI device name — so try, in order: exact GDI name (older Qt), unique
+        friendly name, then a positional zip of both lists sorted by origin.
         """
         screens = QGuiApplication.screens()
-        by_gdi = {s.name(): s for s in screens}
+        by_name = {s.name(): s for s in screens}
+        names_unique = len(by_name) == len(screens)
+        friendly_for_gdi = {d.gdi_name: d.friendly_name for d in disps}
         s_sorted = sorted(screens, key=lambda s: (s.geometry().x(), s.geometry().y()))
         d_sorted = sorted(disps, key=lambda d: (d.x, d.y))
         pos_map = {d.gdi_name: s for d, s in zip(d_sorted, s_sorted, strict=False)}
 
         def lookup(gdi):
-            if gdi in by_gdi:
-                return by_gdi[gdi]
-            log.warning("QScreen name did not match %s; using positional fallback", gdi)
+            if gdi in by_name:                          # Qt 5-era GDI names
+                return by_name[gdi]
+            friendly = friendly_for_gdi.get(gdi)
+            if names_unique and friendly in by_name:    # Qt 6 friendly names
+                return by_name[friendly]
+            log.debug("QScreen name did not match %s; using positional fallback", gdi)
             return pos_map.get(gdi)
         return lookup
 
@@ -329,11 +346,16 @@ class HdrShotApp:
         # the selected display (kept alive by the preview) but frees the others.
         self._caps = None
         self._capturing = False
-        self._preview = PreviewWindow(result, self.config, on_saved=self._on_saved)
-        self._preview.setStyleSheet(STYLE)
-        self._preview.show()
-        self._preview.raise_()
-        self._preview.activateWindow()
+        # Keep every open preview alive (a new capture must not hard-delete an
+        # earlier preview holding an unsaved shot); pruned on window close.
+        preview = PreviewWindow(result, self.config, on_saved=self._on_saved)
+        preview.setStyleSheet(STYLE)
+        self._previews.append(preview)
+        preview.destroyed.connect(
+            lambda _=None, p=preview: p in self._previews and self._previews.remove(p))
+        preview.show()
+        preview.raise_()
+        preview.activateWindow()
 
     def _on_saved(self, info: dict, preview_u8):
         if not self.config.get("notifications"):

@@ -410,7 +410,13 @@ def capture_all() -> dict[str, MonitorCapture]:
                             desc = _output_desc(output)
                             if not desc.AttachedToDesktop:
                                 continue
-                            linear = _grab_output(device, ctx, output, desc)
+                            try:
+                                linear = _grab_output(device, ctx, output, desc)
+                            except CaptureError as e:
+                                # One failing output (secure desktop, mode change,
+                                # driver hiccup) must not abort the other monitors.
+                                log.warning("skipping output %s: %s", desc.DeviceName, e)
+                                continue
                             if linear is None:
                                 log.warning("no frame for %s", desc.DeviceName)
                                 continue
@@ -419,7 +425,10 @@ def capture_all() -> dict[str, MonitorCapture]:
                             deg = rotation_to_degrees(desc.Rotation)
                             # Rotate the panel-native buffer into desktop orientation so
                             # its shape matches the on-desktop rect (crops stay correct).
-                            if deg and (linear.shape[1], linear.shape[0]) != (dw, dh):
+                            # 180 deg keeps the same shape, so it must rotate
+                            # unconditionally — the shape test can only clear 90/270.
+                            if deg == 180 or (
+                                    deg and (linear.shape[1], linear.shape[0]) != (dw, dh)):
                                 log.warning("display %s is rotated %d deg; rotating buffer "
                                             "(best-effort)", desc.DeviceName, deg)
                                 linear = apply_rotation(linear, deg)

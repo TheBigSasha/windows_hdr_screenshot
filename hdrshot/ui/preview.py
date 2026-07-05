@@ -58,6 +58,7 @@ class PreviewWindow(QWidget):
         self.setWindowTitle("HDR Shot — Preview")
         self.setObjectName("preview")
         self.setMinimumWidth(560)
+        self.setAttribute(Qt.WA_DeleteOnClose)   # closing frees the FP16 buffer
         self._build()
 
     # -- ui ---------------------------------------------------------------- #
@@ -168,7 +169,10 @@ class PreviewWindow(QWidget):
     def _save(self):
         fid = self.combo.currentData()
         self._set_saving(True)
-        worker = EncodeWorker(self.result, fid, self.default_dir, template=self.template)
+        gq = self.config.get("gainmap_quality") if self.config else None
+        gd = self.config.get("gainmap_downscale") if self.config else None
+        worker = EncodeWorker(self.result, fid, self.default_dir, template=self.template,
+                              gainmap_quality=gq, gainmap_downscale=gd)
         worker.signals.finished.connect(self._on_saved_ok)
         worker.signals.error.connect(self._on_saved_err)
         QThreadPool.globalInstance().start(worker)

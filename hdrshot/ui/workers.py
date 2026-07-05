@@ -48,18 +48,23 @@ class EncodeWorker(QRunnable):
     """Encodes/saves a `CaptureResult` off the main thread. Emits the info dict."""
 
     def __init__(self, result: pipeline.CaptureResult, fmt: str, out_dir: str,
-                 template: str | None = None):
+                 template: str | None = None, gainmap_quality: int | None = None,
+                 gainmap_downscale: int | None = None):
         super().__init__()
         self.result = result
         self.fmt = fmt
         self.out_dir = out_dir
         self.template = template
+        self.gainmap_quality = gainmap_quality
+        self.gainmap_downscale = gainmap_downscale
         self.signals = _Signals()
 
     @Slot()
     def run(self):
         try:
-            info = pipeline.save(self.result, self.fmt, self.out_dir, template=self.template)
+            info = pipeline.save(self.result, self.fmt, self.out_dir, template=self.template,
+                                 gainmap_quality=self.gainmap_quality,
+                                 gainmap_downscale=self.gainmap_downscale)
             self.signals.finished.emit(info)
         except Exception as e:  # pragma: no cover - surfaced to the GUI
             log.exception("encode worker failed")

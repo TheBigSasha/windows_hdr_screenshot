@@ -65,10 +65,19 @@ def compute_gainmap(linear: np.ndarray, sdr_white_nits: float,
                          Image.Resampling.BILINEAR)
         gm_u8 = np.asarray(img)
 
+    # Decoders interpolate display weight as (H - CapacityMin)/(CapacityMax -
+    # CapacityMin); equal capacities (a uniformly-boosted or flat image) would
+    # divide by zero. Keep the capacities strictly separated.
+    cap_min_log2 = max(gain_min_log2, 0.0)
+    cap_max_log2 = gain_max_log2
+    if cap_max_log2 - cap_min_log2 < 1e-4:
+        cap_min_log2 = 0.0
+        cap_max_log2 = max(cap_max_log2, 1e-4)
+
     meta = {
         "gain_min_log2": gain_min_log2, "gain_max_log2": gain_max_log2, "gamma": 1.0,
         "offset_sdr": OFFSET, "offset_hdr": OFFSET,
-        "cap_min_log2": max(gain_min_log2, 0.0), "cap_max_log2": gain_max_log2,
+        "cap_min_log2": cap_min_log2, "cap_max_log2": cap_max_log2,
     }
     return gm_u8, meta
 

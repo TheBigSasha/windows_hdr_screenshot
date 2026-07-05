@@ -214,6 +214,13 @@ class Overlay(QWidget):
         self._window_rect = self._buffer_to_widget(bx0, by0, bx1 - bx0, by1 - by0)
 
     # -- input ------------------------------------------------------------- #
+    def enterEvent(self, e):
+        # Keyboard actions (Enter/Space/arrows) must act on the monitor under the
+        # cursor, not whichever overlay was focused first.
+        self.activateWindow()
+        self.setFocus()
+        super().enterEvent(e)
+
     def mousePressEvent(self, e):
         if e.button() != Qt.LeftButton:
             return

@@ -23,13 +23,24 @@ DEFAULTS: dict = {
     "gainmap_quality": 90,             # UltraHDR base/gainmap JPEG quality
     "gainmap_downscale": 1,            # gain-map resolution divisor (1 = full res)
     "copy_to_clipboard": False,        # also copy the SDR image on save
-    "copy_only": False,                # copy without writing a file
-    "ask_where_to_save": False,        # prompt for a path each save
     "notifications": True,             # post-capture toast
     "run_at_login": False,             # start with Windows
 }
 
 _VALID_FORMATS = {"auto", "ultrahdr", "exr", "heic", "png", "jpeg", "avif"}
+
+
+def _type_ok(value, default) -> bool:
+    """Is ``value`` an acceptable stand-in for ``default``'s type? Exact-ish:
+    bool is not an int here, but an int is fine where a float would be."""
+    want = type(default)
+    if want is bool:
+        return isinstance(value, bool)
+    if want is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if want is float:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return isinstance(value, want)
 
 
 def config_dir() -> str:
@@ -59,13 +70,22 @@ class Config:
             with open(path, encoding="utf-8") as f:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
-                # Keep only known keys; ignore junk/forward-compat extras gracefully.
-                for k in DEFAULTS:
-                    if k in loaded:
-                        data[k] = loaded[k]
+                # Keep only known keys with the expected type; a hand-edited or
+                # corrupt value must never be able to crash the app at startup.
+                for k, default in DEFAULTS.items():
+                    if k not in loaded:
+                        continue
+                    v = loaded[k]
+                    if _type_ok(v, default):
+                        data[k] = v
+                    else:
+                        log.warning("config key %r has %s, expected %s; using default",
+                                    k, type(v).__name__, type(default).__name__)
         except FileNotFoundError:
             log.debug("no config at %s; using defaults", path)
-        except (json.JSONDecodeError, OSError) as e:
+        # ValueError covers json.JSONDecodeError AND UnicodeDecodeError
+        # (a UTF-16/garbage file must not kill the GUI).
+        except (ValueError, OSError) as e:
             log.warning("config load failed (%s); using defaults", e)
         return cls(data=data, path=path)
 
@@ -91,10 +111,15 @@ class Config:
         return f if f in _VALID_FORMATS else "auto"
 
     def resolved_save_dir(self) -> str:
-        """The configured save dir, or the default Pictures/Screenshots folder."""
+        """The configured save dir, or the default Pictures/Screenshots folder.
+        Falls back to the default if the configured folder can't be created
+        (unplugged drive, bad path) — a save must never crash on this."""
         d = (self.get("save_dir") or "").strip()
         if d:
-            os.makedirs(d, exist_ok=True)
-            return d
+            try:
+                os.makedirs(d, exist_ok=True)
+                return d
+            except OSError as e:
+                log.warning("configured save_dir %r unusable (%s); using default", d, e)
         from .core import pipeline
         return pipeline.default_save_dir()

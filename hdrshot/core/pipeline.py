@@ -147,7 +147,9 @@ def capture_region(phys_rect: tuple[int, int, int, int],
 
     if len(hits) == 1:
         _, mc, (ix, iy, iw, ih) = hits[0]
-        crop = np.ascontiguousarray(mc.linear[iy - mc.y:iy - mc.y + ih, ix - mc.x:ix - mc.x + iw])
+        # .copy() (not ascontiguousarray): a full-width slice is already contiguous
+        # and would alias — keeping the whole monitor buffer alive after release.
+        crop = mc.linear[iy - mc.y:iy - mc.y + ih, ix - mc.x:ix - mc.x + iw].copy()
         return CaptureResult(linear=crop, sdr_white_nits=white, display=disp,
                              region_phys=(ix, iy, iw, ih),
                              stats=color.hdr_stats(crop, white))
@@ -189,7 +191,7 @@ def capture_buffer_region(caps: dict, disps: list, gdi_name: str,
         x1, y1 = min(mc.width, bx + bw), min(mc.height, by + bh)
         if x1 <= x0 or y1 <= y0:
             raise RegionError(f"selection {buffer_rect!r} outside buffer {mc.width}x{mc.height}")
-        crop = np.ascontiguousarray(mc.linear[y0:y1, x0:x1])
+        crop = mc.linear[y0:y1, x0:x1].copy()   # independent copy, never an alias
         rect = (x0, y0, x1 - x0, y1 - y0)
     return CaptureResult(linear=crop, sdr_white_nits=white, display=disp,
                          region_phys=rect, stats=color.hdr_stats(crop, white))
@@ -218,7 +220,9 @@ def choose_auto_format(result: CaptureResult) -> str:
     return "png"
 
 
-def encode(result: CaptureResult, fmt: str, path: str) -> dict:
+def encode(result: CaptureResult, fmt: str, path: str, *,
+           gainmap_quality: int | None = None,
+           gainmap_downscale: int | None = None) -> dict:
     """Encode the result to ``path`` in ``fmt``. Returns info about what was written."""
     if fmt == "auto":
         fmt = choose_auto_format(result)
@@ -230,7 +234,10 @@ def encode(result: CaptureResult, fmt: str, path: str) -> dict:
     if fmt == "exr":
         exr.write_exr(path, lin, white)
     elif fmt == "ultrahdr":
-        meta = ultrahdr.write_ultrahdr(path, lin, white)
+        meta = ultrahdr.write_ultrahdr(
+            path, lin, white,
+            quality=gainmap_quality if gainmap_quality else 90,
+            gainmap_downscale=gainmap_downscale if gainmap_downscale else 1)
         info["gainmap_max_stops"] = round(meta["gain_max_log2"], 3)
     elif fmt == "heic":
         from ..encoders import heic
@@ -286,9 +293,16 @@ def validate_template(template: str) -> None:
                 f"valid tokens: {', '.join('{' + t + '}' for t in sorted(TEMPLATE_TOKENS))}")
 
 
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL",
+                   *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
 def _sanitize(name: str) -> str:
     bad = '<>:"/\\|?*'
-    return "".join("_" if c in bad else c for c in name).strip()
+    out = "".join("_" if c in bad or ord(c) < 32 else c for c in name).strip(" .")
+    if out.split(".")[0].upper() in _RESERVED_NAMES:   # CON.jpg is still the CON device
+        out = "_" + out
+    return out
 
 
 def render_filename(template: str, fmt: str, hdr: bool, *, display: str = "",
@@ -305,7 +319,10 @@ def render_filename(template: str, fmt: str, hdr: bool, *, display: str = "",
         hdr="HDR " if hdr else "",
         n="" if n <= 1 else f" ({n})",
     )
-    body = re.sub(r"\s+", " ", body).strip() or "Screenshot"
+    body = re.sub(r"\s+", " ", body).strip()
+    # Sanitize the whole rendered name: a template with path separators, reserved
+    # characters or device names must stay a plain filename inside the save dir.
+    body = _sanitize(body) or "Screenshot"
     return body + EXT.get(fmt, ".png")
 
 
@@ -323,15 +340,28 @@ def _unique_path(out_dir: str, filename: str) -> str:
         n += 1
 
 
+def _avif_hdr_available() -> bool:
+    try:
+        from ..encoders import avif_hdr
+        return avif_hdr.available()
+    except ImportError:
+        return False
+
+
 def save(result: CaptureResult, fmt: str = "auto", out_dir: str | None = None,
-         template: str | None = None) -> dict:
+         template: str | None = None, *,
+         gainmap_quality: int | None = None,
+         gainmap_downscale: int | None = None) -> dict:
     if fmt == "auto":
         fmt = choose_auto_format(result)
     out_dir = out_dir or default_save_dir()
     os.makedirs(out_dir, exist_ok=True)
     hdr = fmt in HDR_FORMATS and result.hdr_capable_content
+    if fmt == "avif" and hdr and not _avif_hdr_available():
+        hdr = False                    # SDR fallback: the filename must not claim HDR
     path = _choose_path(out_dir, fmt, hdr, result, template)
-    info = encode(result, fmt, path)
+    info = encode(result, fmt, path,
+                  gainmap_quality=gainmap_quality, gainmap_downscale=gainmap_downscale)
     info["path"] = path
     log.info("saved %s (%s)", path, "HDR" if info.get("hdr") else "SDR")
     return info
@@ -344,7 +374,11 @@ def _choose_path(out_dir: str, fmt: str, hdr: bool, result: CaptureResult,
         return _unique_path(out_dir, timestamped_name(fmt, hdr))
     validate_template(template)
     display_name = result.display.friendly_name if result.display else ""
-    has_n = "{n}" in template
+    # Detect a real {n} field (a literal "{{n}}" renders as constant "{n}" text and
+    # must get the collision suffix, or this loop would never terminate).
+    import string
+    has_n = any(fieldname == "n"
+                for _, fieldname, _, _ in string.Formatter().parse(template))
     n = 1
     while True:
         fname = render_filename(template, fmt, hdr, display=display_name, n=n)
