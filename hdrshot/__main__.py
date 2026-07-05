@@ -6,12 +6,14 @@
     python -m hdrshot region X Y W H  # capture a virtual-desktop rectangle
     python -m hdrshot selftest        # synthesise HDR, write every format, verify
 
-Every command accepts ``--verbose`` for logging and ``--json`` for machine-readable
-output (see also ``hdrshot parse`` and ``hdrshot capture`` for agent workflows).
+``--verbose`` (global) enables logging to stderr; the capture/inspection commands
+accept ``--json`` for machine-readable output (see also ``hdrshot parse`` and
+``hdrshot capture`` for agent workflows).
 """
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 
@@ -128,7 +130,12 @@ def cmd_capture(args) -> int:
 
 
 def cmd_gui(args) -> int:
-    from .ui.app import main as gui_main
+    try:
+        from .ui.app import main as gui_main
+    except ImportError as e:
+        print(f"error: the GUI needs the optional [gui] extra (PySide6): "
+              f"pip install \"hdrshot[gui]\"  ({e})", file=sys.stderr)
+        return 2
     return gui_main()
 
 
@@ -190,7 +197,21 @@ def main(argv=None) -> int:
     handlers = {"info": cmd_info, "full": cmd_full, "region": cmd_region,
                 "capture": cmd_capture, "parse": cmd_parse, "check": cmd_check,
                 "selftest": cmd_selftest, None: cmd_gui}
-    return handlers[args.cmd](args)
+    try:
+        return handlers[args.cmd](args)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as e:
+        # Machine-readable failure contract (docs/AGENTS.md): JSON on stdout when
+        # --json, one line on stderr otherwise, exit 3 — never a bare traceback.
+        logging.getLogger(__name__).debug("command failed", exc_info=True)
+        msg = f"{type(e).__name__}: {e}"
+        if getattr(args, "json", False):
+            print(json.dumps({"error": {"type": type(e).__name__, "message": str(e)}},
+                             indent=2))
+        else:
+            print(f"error: {msg}", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":

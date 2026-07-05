@@ -36,8 +36,30 @@ PREVIEW_NOTE = ("The SDR preview understates HDR: highlights above SDR white are
                 "true-HDR file) as the source of truth for luminance.")
 
 
+def _finite(obj):
+    """Replace non-finite floats with None so the output is strict JSON (json.dumps
+    would otherwise emit bare ``Infinity``/``NaN`` tokens no JSON parser accepts)."""
+    if isinstance(obj, float):
+        return obj if np.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _finite(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_finite(v) for v in obj]
+    return obj
+
+
 def _dumps(obj: dict) -> str:
-    return json.dumps(obj, indent=2, sort_keys=False)
+    return json.dumps(_finite(obj), indent=2, sort_keys=False)
+
+
+def _file_error(path: str, exc: Exception) -> dict:
+    return {
+        "path": os.path.abspath(path),
+        "format": None,
+        "is_hdr": None,
+        "error": f"{type(exc).__name__}: {exc}",
+        "notes": PREVIEW_NOTE,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -168,12 +190,20 @@ def _parse_exr(path: str) -> dict:
     f = OpenEXR.File(path)
     part = f.parts[0]
     chans = list(part.channels.keys())
-    try:
-        rgb = part.channels["RGB"].pixels
-    except Exception:
-        rgb = np.stack([part.channels[c].pixels for c in ("R", "G", "B") if c in part.channels],
-                       axis=-1)
-    mx = float(np.max(rgb)) if rgb.size else 0.0
+    # The reader may group planar channels: "RGB"/"RGBA" (HxWx3/4), or leave
+    # separate scalar R/G/B(/A) channels. Handle all three layouts.
+    if "RGB" in part.channels:
+        rgb = np.asarray(part.channels["RGB"].pixels)
+    elif "RGBA" in part.channels:
+        rgb = np.asarray(part.channels["RGBA"].pixels)[..., :3]
+    else:
+        planes = [part.channels[c].pixels for c in ("R", "G", "B") if c in part.channels]
+        if not planes:
+            raise ValueError(f"EXR has no R/G/B color channels (found: {', '.join(chans)})")
+        rgb = np.stack(planes, axis=-1)
+    finite = np.asarray(rgb, np.float32)
+    finite = finite[np.isfinite(finite)]
+    mx = float(np.max(finite)) if finite.size else 0.0
     peak_nits = mx * color.SCRGB_REFERENCE_NITS
     return {
         "format": "exr",
@@ -216,6 +246,9 @@ def _parse_generic_sdr(path: str, fmt: str) -> dict:
 
 
 def _detect_format(path: str, head: bytes) -> str:
+    """``head`` should be the WHOLE file when available: real-world UltraHDR JPEGs
+    can carry EXIF/ICC segments before the MPF/XMP markers, well past any fixed
+    prefix."""
     ext = os.path.splitext(path)[1].lower()
     if ext in (".jpg", ".jpeg"):
         return "ultrahdr" if b"MPF\x00" in head or b"hdr-gain-map" in head else "jpeg"
@@ -240,7 +273,7 @@ def parse_file(path: str) -> dict:
         raise FileNotFoundError(path)
     with open(path, "rb") as fp:
         data = fp.read()
-    fmt = _detect_format(path, data[:4096])
+    fmt = _detect_format(path, data)
     result: dict
     try:
         if fmt == "ultrahdr":
@@ -256,6 +289,10 @@ def parse_file(path: str) -> dict:
     except ImportError as e:
         result = {"format": fmt, "is_hdr": None,
                   "error": f"cannot parse {fmt}: optional dependency missing ({e})"}
+    except Exception as e:
+        # Corrupt/truncated/hostile file: an undetermined verdict, never a traceback.
+        result = {"format": fmt, "is_hdr": None,
+                  "error": f"unreadable {fmt}: {type(e).__name__}: {e}"}
     result["path"] = os.path.abspath(path)
     result["size_bytes"] = len(data)
     result["notes"] = PREVIEW_NOTE
@@ -284,7 +321,34 @@ def _parse_avif(path: str, data: bytes) -> dict:
                 }
     except Exception as e:  # pragma: no cover - best-effort probe
         log.debug("imagecodecs AVIF probe failed: %s", e)
+    # No imagecodecs: read the nclx colr box straight from the container so a
+    # 10-bit PQ HDR AVIF is not misreported as SDR on a base install.
+    nclx = _scan_avif_nclx(data)
+    if nclx is not None:
+        cp, tc, mc = nclx
+        out = {
+            "format": "avif",
+            "is_hdr": bool(tc == 16),
+            "transfer_characteristics": tc,
+            "transfer_name": _name(_TC_NAMES, tc),
+            "color_primaries": cp,
+            "primaries_name": _name(_CP_NAMES, cp),
+            "matrix_coefficients": mc,
+            "note": "container-level nclx probe (install hdrshot[avif-hdr] for bit depth)",
+        }
+        return out
     return _parse_generic_sdr(path, "avif")
+
+
+def _scan_avif_nclx(data: bytes) -> tuple[int, int, int] | None:
+    """Find the first ISOBMFF ``colr`` box with an ``nclx`` profile and return
+    (primaries, transfer, matrix), or None."""
+    idx = data.find(b"colrnclx")
+    if idx < 0 or idx + 14 > len(data):
+        return None
+    import struct
+    cp, tc, mc = struct.unpack(">HHH", data[idx + 8: idx + 14])
+    return cp, tc, mc
 
 
 # --------------------------------------------------------------------------- #
@@ -320,7 +384,11 @@ def write_preview_from_file(path: str, out_png: str) -> str:
 # Command handlers
 # --------------------------------------------------------------------------- #
 def cmd_parse(args) -> int:
-    meta = parse_file(args.file)
+    try:
+        meta = parse_file(args.file)
+    except Exception as e:
+        print(_dumps(_file_error(args.file, e)))
+        return 2                                  # undetermined — never a traceback
     if getattr(args, "preview", None):
         try:
             meta["preview_png"] = os.path.abspath(write_preview_from_file(args.file, args.preview))
@@ -341,10 +409,22 @@ def cmd_check(args) -> int:
     Exit 0 = passes, 1 = fails (SDR / below threshold), 2 = undetermined. Designed
     for an agent to sanity-check its own capture: ``hdrshot check shot.jpg``.
     """
-    meta = parse_file(args.file)
+    try:
+        meta = parse_file(args.file)
+    except Exception as e:
+        err = _file_error(args.file, e)
+        verdict = {"file": err["path"], "format": None, "is_hdr": None, "peak_nits": None,
+                   "headroom_stops": None, "pass": False, "reasons": [err["error"]]}
+        if getattr(args, "json", False):
+            print(_dumps(verdict))
+        else:
+            print(f"UNDETERMINED: {os.path.basename(args.file)} ({err['error']})")
+        return 2
     is_hdr = meta.get("is_hdr")
     peak_nits = meta.get("peak_nits")
-    stops = meta.get("gainmap_max_stops") or meta.get("headroom_stops")
+    stops = meta.get("gainmap_max_stops")
+    if stops is None:                       # explicit None test: 0.0 is a real value
+        stops = meta.get("headroom_stops")
 
     reasons = []
     ok = is_hdr is True
@@ -391,7 +471,11 @@ def cmd_capture(args) -> int:
         res = pipeline.capture_region((x, y, w, h), caps, disps)
     else:
         idx = args.display if args.display is not None else 0
-        target = next((d for d in disps if d.index == idx), disps[0])
+        target = next((d for d in disps if d.index == idx), None)
+        if target is None:
+            raise pipeline.RegionError(
+                f"no display with index {idx} (available: "
+                f"{', '.join(str(d.index) for d in disps) or 'none'})")
         res = pipeline.capture_display(target, caps, disps)
 
     info = pipeline.save(res, args.format, args.out)

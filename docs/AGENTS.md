@@ -20,10 +20,13 @@ numbers, so an agent can decide deterministically.
 ## Install (headless / agent)
 
 ```bash
-pip install hdrshot                 # base: capture + PNG/JPEG/EXR/UltraHDR
-pip install "hdrshot[avif-hdr]"     # + true 10-bit PQ HDR AVIF
-pip install "hdrshot[heic]"         # + 10-bit PQ HEIC (pulls x265/GPL; see notes)
+# Not on PyPI yet — install from GitHub (or a checkout: pip install .[extra]):
+pip install "hdrshot @ git+https://github.com/TheBigSasha/windows_hdr_screenshot"
+pip install "hdrshot[avif-hdr] @ git+https://github.com/TheBigSasha/windows_hdr_screenshot"   # + true 10-bit PQ HDR AVIF
+pip install "hdrshot[heic] @ git+https://github.com/TheBigSasha/windows_hdr_screenshot"       # + 10-bit PQ HEIC (x265/GPL; see notes)
 ```
+Or use the standalone release zip: run `HDRShot\hdrshot-cli.exe` — the console
+build with real stdout/exit codes (the windowed `HDRShot.exe` has neither).
 No GUI/Qt is required for any command below. Windows 10 1803+ / 11 for live
 capture; the analysis commands (`parse`, `check`, `selftest`) run on any OS.
 
@@ -103,18 +106,30 @@ Assertion helper for validating your own captures. **Exit 0 = pass, 1 = fail,
 
 ## Exit codes
 
-| Command | 0 | 1 | 2 | other |
-|---------|---|---|---|-------|
-| `check` | HDR (passes thresholds) | SDR / below threshold | undetermined | — |
-| `parse` | HDR | SDR | undetermined | — |
-| `info`/`full`/`region`/`capture` | success | — | unsupported platform (no capture backend) | argparse error |
+| Command | 0 | 1 | 2 | 3 |
+|---------|---|---|---|---|
+| `check` | HDR (passes thresholds) | SDR / below threshold | undetermined (incl. missing/corrupt file, usage error) | — |
+| `parse` | HDR | SDR | undetermined (incl. missing/corrupt file, usage error) | — |
+| `info`/`full`/`region`/`capture` | success | — | unusable invocation/environment (bad args, no capture backend) | capture/encode error |
+
+**Failure contract:** commands never dump tracebacks. `parse`/`check` report an
+unreadable file as *undetermined* — JSON with an `"error"` field (and, for
+`check`, `"pass": false`), exit 2. Capture commands report runtime failures
+(invalid region/display, encoder error) as `{"error": {"type", "message"}}` on
+stdout under `--json` (a one-line `error: …` on stderr otherwise), exit 3.
+argparse usage errors exit 2 with usage text on stderr.
 
 ## Interpreting luminance
 
-- **`peak_nits` is exact** for EXR and HEIC/AVIF-PQ. For **UltraHDR it is
-  approximate/omitted** because the gain map is relative to SDR white — use
-  `gainmap_max_stops`, or `peak_ratio_over_sdr_white = 2^gainmap_max_stops`, and
-  multiply by the display's `sdr_white_nits` for an absolute estimate.
+- **`peak_nits` is exact for EXR** (`parse` computes it from the pixels). For
+  **HEIC/AVIF-PQ, `parse` reports the encoding (PQ/BT.2020/bit depth), not
+  `peak_nits`** — decoding pixels for peak luminance is not implemented, so
+  `check --min-nits` on those formats is *undetermined*; gate on `--min-stops`
+  with EXR/UltraHDR, or `parse` the EXR twin of the capture. For **UltraHDR**
+  `peak_nits` is approximate/omitted because the gain map is relative to SDR
+  white — use `gainmap_max_stops`, or `peak_ratio_over_sdr_white =
+  2^gainmap_max_stops`, and multiply by the display's `sdr_white_nits` for an
+  absolute estimate.
 - **`peak_ratio`** is the brightest channel divided by SDR paper white. `> 1.05`
   with a nonzero `hdr_pixel_fraction` is the HDR trigger.
 - For pixel-exact analysis, capture **EXR** (`--format exr`) and `parse` it.
@@ -151,9 +166,10 @@ meta = agentcli.parse_file("shot.jpg")           # dict; is_hdr, gainmap_max_sto
 # Gate a workflow on the display actually being in HDR mode:
 hdrshot info --json | jq -e '.any_hdr_enabled' >/dev/null || { echo "HDR is off"; exit 1; }
 
-# Capture, then assert the result is real HDR before trusting it:
+# Capture, then assert the result is real HDR before trusting it
+# (parse/check take exactly one file — read the path from the capture JSON):
 hdrshot capture --display 0 --format ultrahdr --out ./out --preview ./out/p.png > cap.json
-hdrshot check ./out/*.jpg --min-stops 1 || echo "capture came back SDR"
+hdrshot check "$(jq -r '.captures[0].path' cap.json)" --min-stops 1 || echo "capture came back SDR"
 
 # Deterministic HDR/SDR branch by exit code:
 if hdrshot check "$IMG" >/dev/null; then echo HDR; else echo SDR; fi
