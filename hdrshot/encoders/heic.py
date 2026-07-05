@@ -2,17 +2,31 @@
 
 This is the container Apple uses for HDR screenshots. We tag it with the correct
 CICP nclx profile (primaries 9 = BT.2020, transfer 16 = SMPTE ST 2084 PQ, matrix
-9) so HDR-aware viewers treat it as HDR10. Requires pillow-heif's x265 encoder.
+9) so HDR-aware viewers treat it as HDR10.
+
+HEIC is an **optional extra** (``pip install hdrshot[heic]``) because the standard
+``pillow-heif`` wheels bundle an x265 (GPL) HEVC encoder — see
+``THIRD_PARTY_NOTICES.md``. Callers should check :func:`available` and degrade
+gracefully when it is not installed.
 """
 from __future__ import annotations
 
 import numpy as np
 
-from .. import color
+from ..core import color
 
 CP_BT2020 = 9      # H.273 colour primaries
 TC_PQ = 16         # H.273 transfer characteristics (SMPTE ST 2084)
 MC_BT2020_NCL = 9  # H.273 matrix coefficients (BT.2020 non-constant luminance)
+
+
+def available() -> bool:
+    """True if a working HEVC-encoding pillow-heif is importable."""
+    try:
+        import pillow_heif  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 
 def write_heic_pq(path: str, linear: np.ndarray, quality: int = 90) -> None:

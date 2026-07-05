@@ -9,9 +9,8 @@ import os
 
 import numpy as np
 
-from . import color, pipeline
-from .encoders import exr as exr_mod
-from .encoders import ultrahdr as uhdr_mod
+from .core import color, pipeline
+from .encoders import heic as heic_mod
 
 
 def make_hdr_scene(w: int = 1280, h: int = 720) -> np.ndarray:
@@ -44,6 +43,7 @@ def _verify_exr(path):
 
 def _verify_ultrahdr(path):
     import io
+
     from PIL import Image
     data = open(path, "rb").read()
     ok_mpf = b"MPF\x00" in data
@@ -61,6 +61,15 @@ def _verify_heic(path):
     return f"{im.info.get('bit_depth')}-bit, transfer={n.get('transfer_characteristics')} (16=PQ), primaries={n.get('color_primaries')} (9=BT.2020)"
 
 
+def _verify_avif(path):
+    from .encoders import avif_hdr
+    m = avif_hdr.probe(path)
+    if m and m.get("bit_depth") == 10:
+        return (f"{m['bit_depth']}-bit, transfer={m.get('transfer_characteristics')} (16=PQ), "
+                f"primaries={m.get('color_primaries')} (9=BT.2020)")
+    return "8-bit SDR (install hdrshot[avif-hdr] for 10-bit PQ)"
+
+
 def run_selftest(out_dir: str | None = None) -> int:
     out_dir = out_dir or os.path.join(pipeline.default_save_dir(), "hdrshot_selftest")
     os.makedirs(out_dir, exist_ok=True)
@@ -71,10 +80,17 @@ def run_selftest(out_dir: str | None = None) -> int:
 
     res = pipeline.CaptureResult(linear=img, sdr_white_nits=80.0, display=None,
                                  region_phys=(0, 0, img.shape[1], img.shape[0]), stats=stats)
-    verifiers = {"exr": _verify_exr, "ultrahdr": _verify_ultrahdr, "heic": _verify_heic}
+    verifiers = {"exr": _verify_exr, "ultrahdr": _verify_ultrahdr, "heic": _verify_heic,
+                 "avif": _verify_avif}
+    formats = ["ultrahdr", "exr", "png", "jpeg", "avif"]
+    if heic_mod.available():
+        formats.insert(2, "heic")
+    else:
+        print("  SKIP heic       (optional extra not installed: pip install hdrshot[heic])")
+
     ok = True
-    for fmt in ("ultrahdr", "exr", "heic", "png", "jpeg", "avif"):
-        path = os.path.join(out_dir, f"selftest{pipeline.EXT[fmt]}".replace("selftest", f"selftest_{fmt}"))
+    for fmt in formats:
+        path = os.path.join(out_dir, f"selftest_{fmt}{pipeline.EXT[fmt]}")
         try:
             pipeline.encode(res, fmt, path)
             size = os.path.getsize(path)

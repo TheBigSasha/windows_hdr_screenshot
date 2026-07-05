@@ -1,26 +1,114 @@
 [project]
 name = "hdrshot"
-version = "0.1.0"
-description = "True HDR screenshots on Windows — gain-map UltraHDR JPEG, OpenEXR and 10-bit PQ HEIC, with SDR fallbacks."
+dynamic = ["version"]
+description = "True HDR screenshots on Windows — gain-map UltraHDR JPEG, OpenEXR, 10-bit PQ HEIC/AVIF, with SDR fallbacks."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = [
-    "numpy>=2.0",
-    "Pillow>=11.0",
-    "OpenEXR>=3.3",
-    "pillow-avif-plugin>=1.5",
-    "pillow-heif>=1.0",
-    "PySide6>=6.7",
-    "comtypes>=1.4",
+authors = [{ name = "Sasha", email = "sashathethird@gmail.com" }]
+keywords = ["hdr", "screenshot", "windows", "ultrahdr", "gain-map", "scrgb", "dxgi", "exr"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture",
+    "Topic :: Multimedia :: Graphics",
 ]
+# Base install = capture + core encoders (PNG/JPEG/EXR/UltraHDR). Optional extras
+# add the heavier / license-encumbered codecs and the GUI. See THIRD_PARTY_NOTICES.md.
+dependencies = [
+    "numpy>=1.24",
+    "Pillow>=10.0",
+    "OpenEXR>=3.3",
+    "pillow-avif-plugin>=1.4",           # 8-bit SDR AVIF (BSD; safe to bundle)
+    "comtypes>=1.4; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.7"]                    # LGPL-3.0 — bundle as separate shared libs
+heic = ["pillow-heif>=1.0"]              # x265/GPL — NOT bundled in binary releases
+avif-hdr = ["imagecodecs>=2024.1.1"]     # true 10-bit BT.2020 PQ HDR AVIF (BSD)
+all = ["hdrshot[gui,heic,avif-hdr]"]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "pyright>=1.1.380",
+    "hdrshot[gui,heic,avif-hdr]",
+]
+
+[project.urls]
+Homepage = "https://github.com/TheBigSasha/windows_hdr_screenshot"
+Repository = "https://github.com/TheBigSasha/windows_hdr_screenshot"
+Issues = "https://github.com/TheBigSasha/windows_hdr_screenshot/issues"
+Changelog = "https://github.com/TheBigSasha/windows_hdr_screenshot/blob/main/CHANGELOG.md"
 
 [project.scripts]
 hdrshot = "hdrshot.__main__:main"
+
+[project.gui-scripts]
+# Windowless launcher (pythonw) so an installed shortcut doesn't flash a console.
+hdrshot-gui = "hdrshot.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["hdrshot", "hdrshot.encoders", "hdrshot.ui"]
+packages = [
+    "hdrshot",
+    "hdrshot.core",
+    "hdrshot.encoders",
+    "hdrshot.backends",
+    "hdrshot.backends.win32",
+    "hdrshot.ui",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "hdrshot.__version__" }
+
+[tool.setuptools.package-data]
+hdrshot = ["py.typed"]
+
+# --------------------------------------------------------------------------- #
+# Tooling
+# --------------------------------------------------------------------------- #
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = [
+    "E741",   # ambiguous names (l, I) — used deliberately in color math
+    "E501",   # line length handled by formatter; a few long docstrings/URLs are fine
+    "B008",   # function calls in argument defaults — not used
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Win32 ctypes bindings deliberately keep C-style names and wide structs.
+"hdrshot/backends/win32/*" = ["N801", "N806", "E402"]
+"hdrshot/__main__.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.pyright]
+include = ["hdrshot"]
+# Type-check the pure, reusable core. Excluded:
+#  - backends/win32: Windows-only ctypes; type-check on the platform, not Linux CI.
+#  - ui: the optional [gui] extra (Qt); rewritten under the worker-thread/overlay work.
+exclude = ["hdrshot/backends/win32", "hdrshot/ui", "**/__pycache__"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.10"
+reportMissingModuleSource = false

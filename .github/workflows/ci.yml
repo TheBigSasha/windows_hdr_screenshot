@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main, release-hardening]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Full gate on Windows: lint + types + tests + the synthetic HDR selftest.
+  # (Real DXGI capture can't run — hosted runners have no interactive desktop —
+  #  which is exactly why the synthetic selftest path exists.)
+  windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Create venv and install
+        shell: bash
+        run: |
+          python -m venv .venv
+          .venv/Scripts/python -m pip install --upgrade pip
+          .venv/Scripts/python -m pip install -e .[dev]
+      - name: Ruff (lint)
+        run: .venv/Scripts/python -m ruff check .
+      - name: Pyright (type check)
+        # Run once, on 3.12: the latest imagecodecs (with the nclx kwargs used by
+        # the HDR-AVIF encoder) has no 3.10 wheel, so an older stub there yields
+        # spurious signature errors.
+        if: matrix.python == '3.12'
+        run: .venv/Scripts/python -m pyright
+      - name: Pytest
+        run: .venv/Scripts/python -m pytest -q
+      - name: Selftest (synthetic HDR encode path)
+        run: .venv/Scripts/python -m hdrshot selftest --out selftest-artifacts
+      - name: Upload selftest artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-${{ matrix.python }}
+          path: selftest-artifacts/
+          if-no-files-found: warn
+
+  # The cross-platform seam (issue #14): the pure package imports and the
+  # math/encoder tests pass off-Windows. This job would have been impossible
+  # before the backend seam (import-time ctypes.windll died here).
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Create venv and install (base + dev tools, no Win32)
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -e .[avif-hdr] pytest ruff
+      - name: Ruff
+        run: .venv/bin/python -m ruff check .
+      - name: Pytest (pure math + encoders + import isolation)
+        run: .venv/bin/python -m pytest -q
+      - name: Selftest runs off-Windows
+        run: .venv/bin/python -m hdrshot selftest --out selftest-linux

@@ -1,0 +1,16 @@
+PackageIdentifier: TheBigSasha.HDRShot
+PackageVersion: "0.2.0"
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: HDRShot\HDRShot.exe
+    PortableCommandAlias: hdrshot-gui
+  - RelativeFilePath: HDRShot\hdrshot-cli.exe
+    PortableCommandAlias: hdrshot
+Installers:
+  - Architecture: x64
+    # Fill in per release (the URL + SHA256 of the Release .zip):
+    InstallerUrl: https://github.com/TheBigSasha/windows_hdr_screenshot/releases/download/v0.2.0/HDRShot-0.2.0-win64.zip
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.6.0

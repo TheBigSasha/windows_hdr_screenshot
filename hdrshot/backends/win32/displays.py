@@ -1,10 +1,10 @@
-r"""Display enumeration and HDR / advanced-color detection.
+r"""Display enumeration and HDR / advanced-color detection (Win32 backend).
 
 Combines two Win32 sources:
   * EnumDisplayMonitors + GetMonitorInfo -> physical-pixel rectangles on the
     virtual desktop (requires per-monitor-v2 DPI awareness).
   * QueryDisplayConfig + DisplayConfigGetDeviceInfo -> per-output HDR state,
-    bit depth and SDR white level.
+    bit depth, SDR white level and rotation.
 
 Everything is keyed by the GDI device name (e.g. r"\\.\DISPLAY5") so the two
 sources can be joined.
@@ -12,28 +12,15 @@ sources can be joined.
 from __future__ import annotations
 
 import ctypes
+import logging
 from ctypes import wintypes
-from dataclasses import dataclass
 
-user32 = ctypes.windll.user32
+from ...core.types import DisplayInfo, rotation_to_degrees
+from .com import RECT, set_process_dpi_aware, user32
 
-# --------------------------------------------------------------------------- #
-# DPI awareness
-# --------------------------------------------------------------------------- #
-DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
+__all__ = ["DisplayInfo", "enumerate_displays", "set_process_dpi_aware"]
 
-
-def set_process_dpi_aware() -> None:
-    """Opt in to per-monitor-v2 DPI awareness so every Win32 coordinate we read
-    is in physical pixels. Must run before any window is created. Idempotent."""
-    try:
-        user32.SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-    except Exception:
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
-        except Exception:
-            user32.SetProcessDPIAware()
-
+log = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # QueryDisplayConfig structs
@@ -116,48 +103,19 @@ class _SDR_WHITE_LEVEL(ctypes.Structure):
 COLOR_ENCODING = {0: "RGB", 1: "YCbCr444", 2: "YCbCr422", 3: "YCbCr420", 4: "Intensity"}
 
 
-@dataclass
-class DisplayInfo:
-    index: int
-    gdi_name: str
-    friendly_name: str
-    x: int
-    y: int
-    width: int
-    height: int
-    is_primary: bool
-    hdr_supported: bool
-    hdr_enabled: bool
-    bits_per_color: int
-    sdr_white_nits: float
-    color_encoding: str
-
-    @property
-    def rect(self) -> tuple[int, int, int, int]:
-        return (self.x, self.y, self.width, self.height)
-
-    def contains(self, px: int, py: int) -> bool:
-        return self.x <= px < self.x + self.width and self.y <= py < self.y + self.height
-
-
 # --------------------------------------------------------------------------- #
 # Monitor rectangles (physical pixels)
 # --------------------------------------------------------------------------- #
-class _RECT(ctypes.Structure):
-    _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
-                ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
-
-
 class _MONITORINFOEXW(ctypes.Structure):
-    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", _RECT),
-                ("rcWork", _RECT), ("dwFlags", wintypes.DWORD),
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", RECT),
+                ("rcWork", RECT), ("dwFlags", wintypes.DWORD),
                 ("szDevice", wintypes.WCHAR * 32)]
 
 
 MONITORINFOF_PRIMARY = 0x1
 _MONITORENUMPROC = ctypes.WINFUNCTYPE(
     wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
-    ctypes.POINTER(_RECT), wintypes.LPARAM)
+    ctypes.POINTER(RECT), wintypes.LPARAM)
 
 
 def _monitor_rects() -> dict:
@@ -195,11 +153,13 @@ def enumerate_displays() -> list[DisplayInfo]:
     n_mode = wintypes.UINT()
     if user32.GetDisplayConfigBufferSizes(
             QDC_ONLY_ACTIVE_PATHS, ctypes.byref(n_path), ctypes.byref(n_mode)) != ERROR_SUCCESS:
+        log.warning("GetDisplayConfigBufferSizes failed; falling back to rect-only enumeration")
         return _fallback_from_rects(rects)
     paths = (_PATH_INFO * n_path.value)()
     modes = (_MODE_INFO * n_mode.value)()
     if user32.QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, ctypes.byref(n_path), paths,
                                  ctypes.byref(n_mode), modes, None) != ERROR_SUCCESS:
+        log.warning("QueryDisplayConfig failed; falling back to rect-only enumeration")
         return _fallback_from_rects(rects)
 
     displays: list[DisplayInfo] = []
@@ -235,11 +195,13 @@ def enumerate_displays() -> list[DisplayInfo]:
             index=len(displays), gdi_name=gdi, friendly_name=friendly or gdi,
             x=rect[0], y=rect[1], width=rect[2], height=rect[3], is_primary=primary,
             hdr_supported=hdr_supported, hdr_enabled=hdr_enabled, bits_per_color=bpc,
-            sdr_white_nits=nits, color_encoding=COLOR_ENCODING.get(enc, str(enc))))
+            sdr_white_nits=nits, color_encoding=COLOR_ENCODING.get(enc, str(enc)),
+            rotation=rotation_to_degrees(p.targetInfo.rotation)))
 
     displays.sort(key=lambda d: (not d.is_primary, d.x, d.y))
     for i, d in enumerate(displays):
         d.index = i
+    log.debug("enumerated %d display(s)", len(displays))
     return displays
 
 
@@ -251,15 +213,10 @@ def _fallback_from_rects(rects: dict) -> list[DisplayInfo]:
     return out
 
 
-def virtual_desktop_bounds(displays: list[DisplayInfo]) -> tuple[int, int, int, int]:
-    """Union rectangle (x, y, w, h) covering all displays in physical pixels."""
-    if not displays:
-        return (0, 0, 0, 0)
-    x0 = min(d.x for d in displays)
-    y0 = min(d.y for d in displays)
-    x1 = max(d.x + d.width for d in displays)
-    y1 = max(d.y + d.height for d in displays)
-    return (x0, y0, x1 - x0, y1 - y0)
+# Re-exported for callers that still import it from here.
+def virtual_desktop_bounds(displays):
+    from ...core.types import virtual_desktop_bounds as _vdb
+    return _vdb(displays)
 
 
 if __name__ == "__main__":
@@ -268,5 +225,5 @@ if __name__ == "__main__":
         tag = "HDR-ON" if d.hdr_enabled else ("HDR-capable" if d.hdr_supported else "SDR")
         star = "*" if d.is_primary else " "
         print(f"{star}[{d.index}] {d.gdi_name} {d.friendly_name!r} "
-              f"{d.width}x{d.height}+{d.x}+{d.y} {tag} "
+              f"{d.width}x{d.height}+{d.x}+{d.y} rot={d.rotation} {tag} "
               f"{d.bits_per_color}bpc {d.color_encoding} sdrwhite={d.sdr_white_nits:.0f}nits")

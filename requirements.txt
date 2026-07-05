@@ -1,7 +1,11 @@
-numpy>=2.0
-Pillow>=11.0
-OpenEXR>=3.3
-pillow-avif-plugin>=1.5
-pillow-heif>=1.0
-PySide6>=6.7
-comtypes>=1.4
+# Dependencies are declared in pyproject.toml — the single source of truth.
+# This file just installs the package (with the GUI extra) from that spec, so
+# `pip install -r requirements.txt` keeps working without duplicating versions.
+-e .[gui]
+
+# Headless / agent install (no Qt):   pip install -e .
+# Optional extras:
+#   .[heic]      10-bit PQ HEIC output (pulls x265/GPL — see THIRD_PARTY_NOTICES.md)
+#   .[avif-hdr]  true 10-bit PQ HDR AVIF via imagecodecs
+#   .[all]       gui + heic + avif-hdr
+#   .[dev]       everything + pytest/ruff/pyright

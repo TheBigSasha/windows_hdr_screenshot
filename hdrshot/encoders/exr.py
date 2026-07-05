@@ -12,10 +12,13 @@ import OpenEXR
 
 def write_exr(path: str, linear: np.ndarray, sdr_white_nits: float = 80.0) -> None:
     rgb = np.ascontiguousarray(linear[..., :3], dtype=np.float16)
+    # Each channel MUST be its own contiguous array: the OpenEXR binding reads the
+    # underlying buffer linearly and silently scrambles strided views like
+    # rgb[..., 0] (whole-image corruption past the first rows).
     channels = {
-        "R": rgb[..., 0],
-        "G": rgb[..., 1],
-        "B": rgb[..., 2],
+        "R": np.ascontiguousarray(rgb[..., 0]),
+        "G": np.ascontiguousarray(rgb[..., 1]),
+        "B": np.ascontiguousarray(rgb[..., 2]),
     }
     if linear.shape[-1] >= 4:
         channels["A"] = np.ascontiguousarray(linear[..., 3], dtype=np.float16)
