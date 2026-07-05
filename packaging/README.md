@@ -19,8 +19,10 @@ pyinstaller hdrshot.spec --noconfirm
   the whole distribution GPL, conflicting with the MIT intent. `imagecodecs` (HDR
   AVIF) is excluded for size. Both remain `pip` extras. See
   [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
-- `HDRShot.exe` launches the GUI with no args; with args it runs the CLI
-  (`HDRShot.exe info`, `HDRShot.exe capture …`).
+- The bundle has **two exes** over one shared runtime: windowed `HDRShot.exe`
+  (the GUI — no console window, but also no usable stdout or exit codes) and
+  console `hdrshot-cli.exe` for scripts/agents (`hdrshot-cli.exe info --json`,
+  `hdrshot-cli.exe capture …`). Both accept the same arguments.
 - The exe is **unsigned**, so SmartScreen warns on first run. Consider code
   signing before wide distribution.
 

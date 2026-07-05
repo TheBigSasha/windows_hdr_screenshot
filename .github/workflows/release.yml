@@ -43,12 +43,23 @@ jobs:
         run: |
           $name = "HDRShot-${{ steps.ver.outputs.version }}-win64"
           Copy-Item LICENSE, THIRD_PARTY_NOTICES.md, README.md packaging/dist/HDRShot/
-          Compress-Archive -Path packaging/dist/HDRShot/* -DestinationPath "$name.zip"
+          # PySide6/Qt is LGPL-3.0: ship the license text alongside the libraries.
+          Invoke-WebRequest https://www.gnu.org/licenses/lgpl-3.0.txt -OutFile packaging/dist/HDRShot/LICENSE.LGPL-3.0.txt
+          # Zip the FOLDER (not its contents): the winget manifest's
+          # NestedInstallerFiles path is HDRShot\HDRShot.exe.
+          Compress-Archive -Path packaging/dist/HDRShot -DestinationPath "$name.zip"
           echo "ASSET=$name.zip" >> $env:GITHUB_ENV
 
-      - name: Smoke-test the exe (CLI path, no desktop needed)
+      - name: Smoke-test the bundle (console CLI: output + exit codes checked)
         shell: pwsh
-        run: packaging/dist/HDRShot/HDRShot.exe --version
+        run: |
+          # The windowed HDRShot.exe can't be exit-code-checked from a script;
+          # hdrshot-cli.exe (console subsystem) is the verifiable twin.
+          $v = & packaging/dist/HDRShot/hdrshot-cli.exe --version
+          if ($LASTEXITCODE -ne 0 -or -not $v) { throw "cli --version failed" }
+          Write-Host "version: $v"
+          & packaging/dist/HDRShot/hdrshot-cli.exe selftest --out smoke-artifacts
+          if ($LASTEXITCODE -ne 0) { throw "cli selftest failed" }
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -64,8 +75,10 @@ jobs:
           body: |
             Standalone Windows build of HDR Shot ${{ steps.ver.outputs.version }}.
 
-            **Unzip and run `HDRShot.exe`** — no Python needed. Unsigned, so
-            SmartScreen may warn on first launch (More info → Run anyway).
+            **Unzip and run `HDRShot\HDRShot.exe`** — no Python needed. Unsigned,
+            so SmartScreen may warn on first launch (More info → Run anyway).
+            Scripts/agents: use `HDRShot\hdrshot-cli.exe` (console build — real
+            stdout JSON and exit codes; the windowed exe has neither).
 
             HDR outputs in this bundle: UltraHDR JPEG, OpenEXR. For 10-bit PQ HEIC
             or HDR AVIF, `pip install "hdrshot[heic]"` / `"hdrshot[avif-hdr]"`.

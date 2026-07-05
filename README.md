@@ -69,12 +69,15 @@ python -m venv .venv
 ```
 
 ### With pip
+Not on PyPI yet — install from a checkout (or straight from GitHub):
 ```bash
-pip install hdrshot                 # base: capture + PNG/JPEG/EXR/UltraHDR (headless CLI)
-pip install "hdrshot[gui]"          # + the Qt GUI
-pip install "hdrshot[avif-hdr]"     # + true 10-bit PQ HDR AVIF
-pip install "hdrshot[heic]"         # + 10-bit PQ HEIC (pulls x265/GPL — see below)
-pip install "hdrshot[all]"          # gui + heic + avif-hdr
+pip install .                       # base: capture + PNG/JPEG/EXR/UltraHDR (headless CLI)
+pip install ".[gui]"                # + the Qt GUI
+pip install ".[avif-hdr]"           # + true 10-bit PQ HDR AVIF
+pip install ".[heic]"               # + 10-bit PQ HEIC (pulls x265/GPL — see below)
+pip install ".[all]"                # gui + heic + avif-hdr
+# or without cloning:
+pip install "hdrshot[gui] @ git+https://github.com/TheBigSasha/windows_hdr_screenshot"
 ```
 
 ## Usage
@@ -103,11 +106,11 @@ a tonemapped preview (where blown highlights look like flat white).
 # One-shot: true-HDR file + viewable SDR preview + JSON
 hdrshot capture --display 0 --format ultrahdr --out ./shots --preview ./shots/p.png
 
-# Read HDR metadata back (exit 0 = HDR, 1 = SDR, 2 = undetermined)
-hdrshot parse ./shots/*.jpg
+# Read HDR metadata back (exit 0 = HDR, 1 = SDR, 2 = undetermined; one file per call)
+hdrshot parse ./shots/shot.jpg
 
 # Assert an image really is HDR (sanity-check your own work)
-hdrshot check ./shots/*.jpg --min-nits 600
+hdrshot check ./shots/shot.jpg --min-stops 1.5
 ```
 
 - **Full reference + JSON schemas:** [docs/AGENTS.md](docs/AGENTS.md)

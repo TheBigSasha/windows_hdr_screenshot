@@ -22,10 +22,10 @@ ships.
 
 | Component | Extra | License | Redistribution notes |
 |-----------|-------|---------|----------------------|
-| [PySide6](https://doc.qt.io/qtforpython/) (Qt 6) | `[gui]` | **LGPL-3.0** (Qt Community) | **Dynamic linking required.** A bundled build must keep the Qt shared libraries as separate, replaceable `.dll`/`.pyd` files (PyInstaller onedir does this) and must reproduce the LGPL text. Do **not** static-link Qt. Users must be able to relink against their own Qt build. |
-| [pillow-avif-plugin](https://github.com/fdintino/pillow-avif-plugin) | `[avif]` | plugin MIT; bundles **libaom** (BSD-2-Clause) + libavif (BSD-2) | Permissive; AV1 royalty-free (AOMedia patent license). Safe to bundle. |
-| [imagecodecs](https://github.com/cgohlke/imagecodecs) | `[avif]` | BSD-3-Clause (bundles libavif/libaom, BSD-2) | Permissive; used for true 10-bit PQ HDR AVIF. Safe to bundle. |
-| [pillow-heif](https://github.com/bigcat88/pillow_heif) | `[heic]` | Apache-2.0 wrapper over **libheif** (LGPL-3.0) built with **x265** (**GPL-2.0-or-later**) | ⚠️ **See HEIC warning below.** |
+| [PySide6](https://doc.qt.io/qtforpython/) (Qt 6) | `[gui]` | **LGPL-3.0** (Qt Community) | **Dynamic linking required.** A bundled build must keep the Qt shared libraries as separate, replaceable `.dll`/`.pyd` files (PyInstaller onedir does this) and must reproduce the LGPL text (the release zip includes `LICENSE.LGPL-3.0.txt`). Do **not** static-link Qt. Users must be able to relink against their own Qt build. |
+| [pillow-avif-plugin](https://github.com/fdintino/pillow-avif-plugin) | *(base dependency — 8-bit SDR AVIF)* | plugin MIT; bundles **libaom** (BSD-2-Clause) + libavif (BSD-2) | Permissive; AV1 royalty-free (AOMedia patent license). Safe to bundle. |
+| [imagecodecs](https://github.com/cgohlke/imagecodecs) | `[avif-hdr]` | BSD-3-Clause (bundles libavif/libaom, BSD-2) | Permissive; used for true 10-bit PQ HDR AVIF. Safe to bundle. |
+| [pillow-heif](https://github.com/bigcat88/pillow_heif) | `[heic]` | BSD-3-Clause wrapper over **libheif** (LGPL-3.0) built with **x265** (**GPL-2.0-or-later**) | ⚠️ **See HEIC warning below.** |
 
 ## ⚠️ HEIC / HEVC (x265) — do not bundle in the binary release
 
@@ -45,7 +45,7 @@ encoders.
   gracefully: the CLI reports a clear, actionable error and the GUI greys the
   HEIC format out with an explanatory tooltip.
 - HDR is fully covered without HEIC: **UltraHDR JPEG** (the default) and
-  **OpenEXR** are the always-available HDR routes, and **AVIF** (`[avif]`, BSD)
+  **OpenEXR** are the always-available HDR routes, and **AVIF** (`[avif-hdr]`, BSD)
   provides an additional royalty-free 10-bit PQ HDR still.
 
 ## PySide6 / Qt (LGPL-3.0) — bundling checklist

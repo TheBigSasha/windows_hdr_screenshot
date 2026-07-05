@@ -2,7 +2,8 @@
 REM Launch HDR Shot from source. Creates a venv + installs on first run.
 REM Hardened per issue #15: checks the Python version, only marks the install
 REM complete after pip actually succeeds, and checks every exit code.
-setlocal enabledelayedexpansion
+REM No delayed expansion: it is never used here and would eat "!" in paths/args.
+setlocal
 cd /d "%~dp0"
 
 set "VENV=.venv"

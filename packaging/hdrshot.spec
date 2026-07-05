@@ -46,11 +46,27 @@ exe = EXE(
     debug=False,
     strip=False,
     upx=False,
-    console=False,           # GUI app: no console window (CLI still works via args)
+    console=False,           # GUI app: no console window
+    icon=None,
+)
+# Console-subsystem twin for scripts/agents: a windowed exe cannot reliably
+# deliver stdout (file redirects come up empty) or exit codes, so the JSON
+# agent CLI gets its own bootloader sharing the same bundle.
+exe_cli = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="hdrshot-cli",
+    debug=False,
+    strip=False,
+    upx=False,
+    console=True,
     icon=None,
 )
 coll = COLLECT(
     exe,
+    exe_cli,
     a.binaries,
     a.datas,
     strip=False,

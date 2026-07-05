@@ -4,6 +4,8 @@ InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
   - RelativeFilePath: HDRShot\HDRShot.exe
+    PortableCommandAlias: hdrshot-gui
+  - RelativeFilePath: HDRShot\hdrshot-cli.exe
     PortableCommandAlias: hdrshot
 Installers:
   - Architecture: x64

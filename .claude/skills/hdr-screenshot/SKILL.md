@@ -22,7 +22,8 @@ you read the true luminance.
 ## Prerequisites
 
 - Windows 10 1803+ / Windows 11 with `hdrshot` installed (`pip install -e .` in
-  the repo, or `pip install hdrshot`). No GUI needed for agent use.
+  the repo, `pip install "hdrshot @ git+https://github.com/TheBigSasha/windows_hdr_screenshot"`,
+  or the release zip's `hdrshot-cli.exe`). No GUI needed for agent use.
 - Real HDR pixels only exist when **Windows HDR is ON** for the display
   (`Settings → Display → Use HDR`, or `Win`+`Alt`+`B`). With HDR off the desktop
   is 8-bit SDR and captures are correct but contain no HDR. Check with

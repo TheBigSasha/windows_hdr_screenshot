@@ -30,7 +30,7 @@ jobs:
           python -m venv .venv
           .venv/Scripts/python -m pip install --upgrade pip
           .venv/Scripts/python -m pip install -e .[dev]
-      - name: Ruff (lint + format check)
+      - name: Ruff (lint)
         run: .venv/Scripts/python -m ruff check .
       - name: Pyright (type check)
         # Run once, on 3.12: the latest imagecodecs (with the nclx kwargs used by
