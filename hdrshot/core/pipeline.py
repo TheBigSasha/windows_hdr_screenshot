@@ -232,6 +232,10 @@ def encode(result: CaptureResult, fmt: str, path: str, *,
     log.debug("encoding %s -> %s (%dx%d)", fmt, path, lin.shape[1], lin.shape[0])
 
     if fmt == "exr":
+        if not exr.available():
+            raise OptionalDependencyError(
+                'EXR output needs the optional "exr" extra: '
+                'pip install "hdrshot[exr]". UltraHDR covers true HDR without it.')
         exr.write_exr(path, lin, white)
     elif fmt == "ultrahdr":
         meta = ultrahdr.write_ultrahdr(

@@ -9,22 +9,29 @@ this automatically when you push a `v*` tag. To build locally:
 pip install -e .[gui] pyinstaller
 cd packaging
 pyinstaller hdrshot.spec --noconfirm
-# -> packaging/dist/HDRShot/HDRShot.exe  (onedir bundle)
+# -> packaging/dist/HDRShot/HDRShot.exe  (native onedir bundle)
 ```
 
 - **onedir, not onefile**: Qt + numpy onefile extraction is slow and trips
   antivirus, and LGPL (PySide6/Qt) requires the Qt libraries to stay as separate,
   replaceable shared libraries — onedir satisfies both.
-- **HEIC is not bundled.** `pillow-heif` links x265 (GPL); bundling it would make
-  the whole distribution GPL, conflicting with the MIT intent. `imagecodecs` (HDR
-  AVIF) is excluded for size. Both remain `pip` extras. See
+- **Optional codecs are not bundled.** `OpenEXR` and `pillow-avif-plugin` have no
+  native ARM64 wheel on this host; `pillow-heif` links x265 (GPL), and
+  `imagecodecs` (HDR AVIF) is excluded for size. UltraHDR JPEG is the bundled
+  true-HDR format. See
   [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 - The bundle has **two exes** over one shared runtime: windowed `HDRShot.exe`
   (the GUI — no console window, but also no usable stdout or exit codes) and
   console `hdrshot-cli.exe` for scripts/agents (`hdrshot-cli.exe info --json`,
   `hdrshot-cli.exe capture …`). Both accept the same arguments.
-- The exe is **unsigned**, so SmartScreen warns on first run. Consider code
+- The bundle is built on a native Windows ARM64 runner and is **unsigned**, so SmartScreen warns on first run. Consider code
   signing before wide distribution.
+
+Fresh ARM64 Windows install (PowerShell, no Python required):
+
+```powershell
+irm https://raw.githubusercontent.com/TheBigSasha/windows_hdr_screenshot/main/install.ps1 | iex
+```
 
 ## Run at login
 
@@ -46,4 +53,4 @@ winget install --manifest packaging/winget
 #   manifests/t/TheBigSasha/HDRShot/<version>/
 ```
 
-Compute the SHA256 with `Get-FileHash HDRShot-<version>-win64.zip -Algorithm SHA256`.
+Compute the SHA256 with `Get-FileHash HDRShot-<version>-win-arm64.zip -Algorithm SHA256`.

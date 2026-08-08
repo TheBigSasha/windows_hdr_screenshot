@@ -1,7 +1,7 @@
 [project]
 name = "hdrshot"
 dynamic = ["version"]
-description = "True HDR screenshots on Windows — gain-map UltraHDR JPEG, OpenEXR, 10-bit PQ HEIC/AVIF, with SDR fallbacks."
+description = "True HDR screenshots on Windows — gain-map UltraHDR JPEG with optional OpenEXR and 10-bit PQ HEIC/AVIF outputs."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -23,26 +23,36 @@ classifiers = [
     "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture",
     "Topic :: Multimedia :: Graphics",
 ]
-# Base install = capture + core encoders (PNG/JPEG/EXR/UltraHDR). Optional extras
+# Base install = capture + core encoders (PNG/JPEG/UltraHDR). Optional extras
 # add the heavier / license-encumbered codecs and the GUI. See THIRD_PARTY_NOTICES.md.
 dependencies = [
     "numpy>=1.24",
     "Pillow>=10.0",
-    "OpenEXR>=3.3",
-    "pillow-avif-plugin>=1.4",           # 8-bit SDR AVIF (BSD; safe to bundle)
     "comtypes>=1.4; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
 gui = ["PySide6>=6.7"]                    # LGPL-3.0 — bundle as separate shared libs
+exr = ["OpenEXR>=3.3"]                    # optional; no native wheel on some ARM64 hosts
+avif-sdr = ["pillow-avif-plugin>=1.4"]    # optional; 8-bit SDR AVIF
 heic = ["pillow-heif>=1.0"]              # x265/GPL — NOT bundled in binary releases
 avif-hdr = ["imagecodecs>=2024.1.1"]     # true 10-bit BT.2020 PQ HDR AVIF (BSD)
-all = ["hdrshot[gui,heic,avif-hdr]"]
+all = [
+    "PySide6>=6.7",
+    "OpenEXR>=3.3",
+    "pillow-avif-plugin>=1.4",
+    "pillow-heif>=1.0",
+    "imagecodecs>=2024.1.1",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "pyright>=1.1.380",
-    "hdrshot[gui,heic,avif-hdr]",
+    "hdrshot[gui]",
+    "OpenEXR>=3.3; platform_machine != 'ARM64'",
+    "pillow-avif-plugin>=1.4; platform_machine != 'ARM64'",
+    "pillow-heif>=1.0; platform_machine != 'ARM64'",
+    "imagecodecs>=2024.1.1; platform_machine != 'ARM64'",
 ]
 
 [project.urls]
@@ -112,3 +122,4 @@ venvPath = "."
 venv = ".venv"
 pythonVersion = "3.10"
 reportMissingModuleSource = false
+reportMissingImports = false

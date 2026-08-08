@@ -10,7 +10,9 @@ import os
 import numpy as np
 
 from .core import color, pipeline
+from .encoders import exr as exr_mod
 from .encoders import heic as heic_mod
+from .encoders import sdr as sdr_mod
 
 
 def make_hdr_scene(w: int = 1280, h: int = 720) -> np.ndarray:
@@ -82,7 +84,15 @@ def run_selftest(out_dir: str | None = None) -> int:
                                  region_phys=(0, 0, img.shape[1], img.shape[0]), stats=stats)
     verifiers = {"exr": _verify_exr, "ultrahdr": _verify_ultrahdr, "heic": _verify_heic,
                  "avif": _verify_avif}
-    formats = ["ultrahdr", "exr", "png", "jpeg", "avif"]
+    formats = ["ultrahdr", "png", "jpeg"]
+    if sdr_mod.avif_available():
+        formats.append("avif")
+    else:
+        print("  SKIP avif       (optional extra not installed: pip install hdrshot[avif-sdr])")
+    if exr_mod.available():
+        formats.insert(1, "exr")
+    else:
+        print("  SKIP exr        (optional extra not installed: pip install hdrshot[exr])")
     if heic_mod.available():
         formats.insert(2, "heic")
     else:

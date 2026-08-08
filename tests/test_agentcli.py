@@ -9,6 +9,9 @@ import pytest
 from hdrshot import agentcli
 from hdrshot.core import color, pipeline
 from hdrshot.core.types import DisplayInfo
+from hdrshot.encoders import exr
+
+EXR_SKIP_REASON = "OpenEXR optional extra is not installed on this architecture"
 
 
 def _write(tmp_path, fmt, scene):
@@ -31,6 +34,7 @@ def test_parse_ultrahdr(tmp_path, hdr_scene):
     assert meta["container"]["mpf"] is True
 
 
+@pytest.mark.skipif(not exr.available(), reason=EXR_SKIP_REASON)
 def test_parse_exr(tmp_path, hdr_scene):
     p = _write(tmp_path, "exr", hdr_scene)
     meta = agentcli.parse_file(p)
@@ -60,6 +64,7 @@ def test_detect_format(tmp_path, hdr_scene, sdr_scene):
         assert agentcli._detect_format(plain, f.read(4096)) == "jpeg"
 
 
+@pytest.mark.skipif(not exr.available(), reason=EXR_SKIP_REASON)
 def test_check_hdr_passes(tmp_path, hdr_scene, capsys):
     p = _write(tmp_path, "exr", hdr_scene)
     args = argparse.Namespace(file=p, min_nits=None, min_stops=None, json=False)
@@ -72,6 +77,7 @@ def test_check_sdr_fails(tmp_path, sdr_scene):
     assert agentcli.cmd_check(args) == 1
 
 
+@pytest.mark.skipif(not exr.available(), reason=EXR_SKIP_REASON)
 def test_check_min_nits_threshold(tmp_path, hdr_scene):
     p = _write(tmp_path, "exr", hdr_scene)
     # scene peaks ~1600 nits; requiring 3000 must fail.
@@ -81,6 +87,7 @@ def test_check_min_nits_threshold(tmp_path, hdr_scene):
     assert agentcli.cmd_check(args_ok) == 0
 
 
+@pytest.mark.skipif(not exr.available(), reason=EXR_SKIP_REASON)
 def test_check_json_shape(tmp_path, hdr_scene, capsys):
     p = _write(tmp_path, "exr", hdr_scene)
     args = argparse.Namespace(file=p, min_nits=None, min_stops=None, json=True)

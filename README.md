@@ -4,8 +4,8 @@
 enabled, HDR Shot captures the desktop in the same wide, linear color space
 Windows composites in (scRGB FP16) and saves it *with the highlights intact* — as
 a gain-map **UltraHDR JPEG** (the cross-platform, macOS-style "HDR inside a
-JPEG"), a lossless **OpenEXR**, a 10-bit **BT.2020 PQ HEIC**, or a 10-bit **PQ
-AVIF**. On an SDR display it falls back to ordinary **PNG / JPEG / AVIF**. It has
+JPEG"), or optionally as lossless **OpenEXR**, 10-bit **BT.2020 PQ HEIC**, or
+10-bit **PQ AVIF**. On an SDR display it falls back to ordinary **PNG / JPEG**. It has
 a simple, modern capture UI in the spirit of the Windows Snipping Tool and the
 macOS screenshot tools — **and** a machine-readable CLI built for scripts and AI
 agents.
@@ -32,14 +32,14 @@ preserves everything above SDR white. The whole capture stack is pure
 
 - **Real HDR capture** via DXGI Desktop Duplication in `R16G16B16A16_FLOAT`
   (scRGB, `1.0` = 80 nits). Highlights above paper white are preserved, not clipped.
-- **Five HDR-aware outputs**
+- **HDR-aware outputs**
   - **UltraHDR JPEG** — SDR base + gain map (Google UltraHDR v1: MPF + `hdrgm`
     XMP + **ISO 21496-1** metadata). Opens *everywhere*; renders in HDR on Chrome,
     Android, Windows Photos **and Apple Photos / Preview / Quick Look**. Default
     for HDR content.
-  - **OpenEXR** — lossless linear scRGB (half-float). Exact luminance for editing / analysis.
+  - **OpenEXR** — lossless linear scRGB (half-float). Optional `[exr]` extra; exact luminance for editing / analysis.
   - **HEIC** — 10-bit BT.2020 PQ (HDR10-style still). Optional `[heic]` extra.
-  - **AVIF** — true 10-bit BT.2020 PQ HDR with the optional `[avif-hdr]` extra (8-bit SDR otherwise).
+  - **AVIF** — true 10-bit BT.2020 PQ HDR with the optional `[avif-hdr]` extra; 8-bit SDR needs `[avif-sdr]`.
   - Plus **PNG / JPEG** for SDR.
 - **Auto format** — UltraHDR for HDR content, PNG for SDR, macOS-style.
 - **Smart multi-monitor** — enumerates every output, matches Qt screens to their
@@ -56,7 +56,22 @@ preserves everything above SDR white. The whole capture stack is pure
 
 Requires Windows 10 1803+ / Windows 11 and Python 3.10+.
 
-### From source (GUI)
+### Production install (GUI)
+
+For a fresh native Windows ARM64 machine, install and launch the self-contained
+production bundle with PowerShell (no Python or dependency install required):
+
+```powershell
+irm https://raw.githubusercontent.com/TheBigSasha/windows_hdr_screenshot/main/install.ps1 | iex
+```
+
+The release bundle contains `HDRShot.exe` for the GUI and `hdrshot-cli.exe` for
+scripts. It is built with PyInstaller on a Windows ARM64 runner with debug
+disabled. It has no external Python or dependency requirement. The development
+workflow below is intentionally separate.
+
+### Development environment (from source)
+
 ```bat
 run.bat
 ```
@@ -71,11 +86,11 @@ python -m venv .venv
 ### With pip
 Not on PyPI yet — install from a checkout (or straight from GitHub):
 ```bash
-pip install .                       # base: capture + PNG/JPEG/EXR/UltraHDR (headless CLI)
+pip install .                       # base: capture + PNG/JPEG/UltraHDR (headless CLI)
 pip install ".[gui]"                # + the Qt GUI
 pip install ".[avif-hdr]"           # + true 10-bit PQ HDR AVIF
 pip install ".[heic]"               # + 10-bit PQ HEIC (pulls x265/GPL — see below)
-pip install ".[all]"                # gui + heic + avif-hdr
+pip install ".[all]"                # gui + exr + avif-sdr + heic + avif-hdr
 # or without cloning:
 pip install "hdrshot[gui] @ git+https://github.com/TheBigSasha/windows_hdr_screenshot"
 ```
@@ -151,11 +166,14 @@ methods are invoked directly by vtable index (documented in `backends/win32/com.
 
 ## Notes & limitations
 
+- **EXR** needs the `[exr]` extra; it is **not** bundled in the ARM64 production
+  release because OpenEXR has no native ARM64 wheel on this host. UltraHDR is
+  the bundled true-HDR format.
 - **HEIC** needs the `[heic]` extra (x265/GPL encoder); it is **not** bundled in
-  binary releases. UltraHDR, EXR and AVIF cover HDR without it. See
+  binary releases. UltraHDR covers true HDR without it. See
   [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **HDR AVIF** needs the `[avif-hdr]` extra (imagecodecs/libavif); without it AVIF
-  output is 8-bit SDR.
+  output is unavailable. 8-bit SDR AVIF needs the separate `[avif-sdr]` extra.
 - **Rotated (portrait) displays** are rotated into desktop orientation best-effort;
   verify framing in the preview.
 

@@ -7,11 +7,15 @@ import json
 import os
 
 import numpy as np
+import pytest
 
 from hdrshot import agentcli
 from hdrshot.config import Config
 from hdrshot.core import color, pipeline
 from hdrshot.core.types import DisplayInfo
+from hdrshot.encoders import exr
+
+EXR_SKIP_REASON = "OpenEXR optional extra is not installed on this architecture"
 
 
 def _result(scene: np.ndarray) -> pipeline.CaptureResult:
@@ -72,6 +76,7 @@ def test_detect_format_scans_whole_file():
     assert agentcli._detect_format("x.jpg", data) == "ultrahdr"
 
 
+@pytest.mark.skipif(not exr.available(), reason=EXR_SKIP_REASON)
 def test_check_zero_stops_is_a_real_value(tmp_path, capsys):
     sdr = np.full((16, 16, 3), 0.5, np.float32)
     p = tmp_path / "x.exr"
@@ -83,6 +88,7 @@ def test_check_zero_stops_is_a_real_value(tmp_path, capsys):
     assert not any("unknown" in r for r in out["reasons"])
 
 
+@pytest.mark.skipif(not exr.available(), reason=EXR_SKIP_REASON)
 def test_parse_exr_nonfinite_pixels_yield_strict_json(tmp_path, capsys):
     from hdrshot.encoders import exr as exr_enc
     arr = np.full((8, 8, 3), 2.0, np.float32)
@@ -96,6 +102,7 @@ def test_parse_exr_nonfinite_pixels_yield_strict_json(tmp_path, capsys):
     assert out["max_linear"] == 2.0             # the inf is masked, not propagated
 
 
+@pytest.mark.skipif(not exr.available(), reason=EXR_SKIP_REASON)
 def test_parse_exr_with_alpha_channel(tmp_path):
     from hdrshot.encoders import exr as exr_enc
     rgba = np.dstack([np.full((8, 8, 3), 3.0, np.float32), np.ones((8, 8), np.float32)])
