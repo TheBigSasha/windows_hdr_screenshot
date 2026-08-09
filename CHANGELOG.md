@@ -6,6 +6,27 @@ All notable changes to HDR Shot are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-08
+
+### Added
+- Native x64 and ARM64 release lanes with a publish-last verification graph.
+- A structured codec capability registry shared by the pipeline, UI, CLI,
+  preferences, configuration, self-test, and agent JSON.
+- Strict explicit AVIF profiles: HDR AVIF can no longer silently become SDR.
+- Frozen-bundle capability contracts, extracted-ZIP smoke tests, SPDX dependency
+  inventories, generated WinGet manifests, checksums, and build provenance.
+- Transactional staged installer upgrades with architecture/version validation
+  and rollback retention.
+
+### Changed
+- Optional codec probes distinguish missing providers from broken native loads;
+  global Pyright missing-import diagnostics remain enabled.
+- The official frozen bundle advertises only UltraHDR, PNG, and JPEG, with every
+  optional provider excluded explicitly.
+- Viewer compatibility language is limited to claims that can be reproduced in
+  the target environment; production installation is not advertised before a
+  verified release exists.
+
 ## [0.2.0] - 2026-07-05
 
 ### Added

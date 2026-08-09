@@ -9,7 +9,7 @@ pytest.importorskip("imagecodecs")
 from hdrshot.encoders import avif_hdr  # noqa: E402
 
 # Older imagecodecs (e.g. last Python-3.10 wheels) lack the nclx kwargs; the HDR
-# path is unavailable there and the pipeline falls back to SDR AVIF, so skip.
+# path is unavailable there, so the optional profile tests skip.
 if not avif_hdr.available():
     pytest.skip("imagecodecs present but its avif_encode lacks nclx support",
                 allow_module_level=True)

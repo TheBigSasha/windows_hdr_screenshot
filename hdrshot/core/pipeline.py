@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..backends import get_backend
+from ..codecs import CodecUnavailableError, profile_for_format, require
 from ..encoders import exr, sdr, ultrahdr
 from . import color
 from .types import DisplayInfo, MonitorCapture, virtual_desktop_bounds  # noqa: F401
@@ -24,16 +25,16 @@ log = logging.getLogger(__name__)
 EXT = {
     "ultrahdr": ".jpg", "exr": ".exr", "heic": ".heic",
     "png": ".png", "jpeg": ".jpg", "avif": ".avif",
+    "avif-sdr": ".avif", "avif-hdr": ".avif",
 }
-HDR_FORMATS = {"ultrahdr", "exr", "heic", "avif"}
+HDR_FORMATS = {"ultrahdr", "exr", "heic", "avif", "avif-hdr"}
 
 
 class RegionError(ValueError):
     """A requested region does not intersect any captured display."""
 
 
-class OptionalDependencyError(RuntimeError):
-    """A format was requested whose optional encoder dependency isn't installed."""
+OptionalDependencyError = CodecUnavailableError
 
 
 # --------------------------------------------------------------------------- #
@@ -220,57 +221,56 @@ def choose_auto_format(result: CaptureResult) -> str:
     return "png"
 
 
+def resolve_profile(result: CaptureResult, fmt: str) -> str:
+    """Resolve a public format id to one explicit encoder profile."""
+    return profile_for_format(fmt, result.hdr_capable_content)
+
+
 def encode(result: CaptureResult, fmt: str, path: str, *,
            gainmap_quality: int | None = None,
            gainmap_downscale: int | None = None) -> dict:
     """Encode the result to ``path`` in ``fmt``. Returns info about what was written."""
-    if fmt == "auto":
-        fmt = choose_auto_format(result)
+    requested_format = fmt
+    profile = resolve_profile(result, fmt)
+    cap = require(profile)
     lin = result.linear
     white = result.sdr_white_nits
-    info = {"format": fmt, "path": path, "hdr": fmt in HDR_FORMATS and result.hdr_capable_content}
-    log.debug("encoding %s -> %s (%dx%d)", fmt, path, lin.shape[1], lin.shape[0])
+    info = {
+        "format": requested_format,
+        "path": path,
+        "profile": profile,
+        "requested_profile": profile,
+        "actual_profile": profile,
+        "provider": cap.provider,
+        "provider_version": cap.provider_version,
+        "hdr": cap.hdr_representation != "sdr" and result.hdr_capable_content,
+        "encoded_hdr": cap.hdr_representation != "sdr" and result.hdr_capable_content,
+    }
+    log.debug("encoding %s (%s) -> %s (%dx%d)", requested_format, profile, path,
+              lin.shape[1], lin.shape[0])
 
-    if fmt == "exr":
-        if not exr.available():
-            raise OptionalDependencyError(
-                'EXR output needs the optional "exr" extra: '
-                'pip install "hdrshot[exr]". UltraHDR covers true HDR without it.')
+    if profile == "exr":
         exr.write_exr(path, lin, white)
-    elif fmt == "ultrahdr":
+    elif profile == "ultrahdr":
         meta = ultrahdr.write_ultrahdr(
             path, lin, white,
             quality=gainmap_quality if gainmap_quality else 90,
             gainmap_downscale=gainmap_downscale if gainmap_downscale else 1)
         info["gainmap_max_stops"] = round(meta["gain_max_log2"], 3)
-    elif fmt == "heic":
+    elif profile == "heic":
         from ..encoders import heic
-        if not heic.available():
-            raise OptionalDependencyError(
-                "HEIC output needs the optional 'heic' extra: pip install hdrshot[heic]. "
-                "UltraHDR, EXR and AVIF cover HDR without it.")
         heic.write_heic_pq(path, lin)
-    elif fmt == "png":
+    elif profile == "png":
         sdr.write_png(path, color.scrgb_to_sdr_u8(lin, white))
-    elif fmt == "jpeg":
+    elif profile == "jpeg":
         sdr.write_jpeg(path, color.scrgb_to_sdr_u8(lin, white))
-    elif fmt == "avif":
-        # True 10-bit BT.2020 PQ AVIF when the content is HDR and libavif is
-        # available; otherwise an 8-bit SDR AVIF.
-        if result.hdr_capable_content:
-            try:
-                from ..encoders import avif_hdr
-            except ImportError:
-                avif_hdr = None
-            if avif_hdr is not None and avif_hdr.available():
-                avif_hdr.write_avif_pq(path, lin)
-                info["hdr"] = True
-                return info
-            log.warning("HDR AVIF encoder unavailable; writing SDR AVIF instead")
-            info["hdr"] = False
+    elif profile == "avif-hdr":
+        from ..encoders import avif_hdr
+        avif_hdr.write_avif_pq(path, lin)
+    elif profile == "avif-sdr":
         sdr.write_avif_sdr(path, color.scrgb_to_sdr_u8(lin, white))
     else:
-        raise ValueError(f"unknown format {fmt!r}")
+        raise ValueError(f"unknown codec profile {profile!r}")
     return info
 
 
@@ -344,26 +344,18 @@ def _unique_path(out_dir: str, filename: str) -> str:
         n += 1
 
 
-def _avif_hdr_available() -> bool:
-    try:
-        from ..encoders import avif_hdr
-        return avif_hdr.available()
-    except ImportError:
-        return False
-
-
 def save(result: CaptureResult, fmt: str = "auto", out_dir: str | None = None,
          template: str | None = None, *,
          gainmap_quality: int | None = None,
          gainmap_downscale: int | None = None) -> dict:
-    if fmt == "auto":
-        fmt = choose_auto_format(result)
+    profile = resolve_profile(result, fmt)
+    cap = require(profile)
     out_dir = out_dir or default_save_dir()
     os.makedirs(out_dir, exist_ok=True)
-    hdr = fmt in HDR_FORMATS and result.hdr_capable_content
-    if fmt == "avif" and hdr and not _avif_hdr_available():
-        hdr = False                    # SDR fallback: the filename must not claim HDR
-    path = _choose_path(out_dir, fmt, hdr, result, template)
+    hdr = cap.hdr_representation != "sdr" and result.hdr_capable_content
+    # Use the resolved profile for the filename extension and `{format}` token;
+    # the public alias remains in the JSON as `format`.
+    path = _choose_path(out_dir, profile, hdr, result, template)
     info = encode(result, fmt, path,
                   gainmap_quality=gainmap_quality, gainmap_downscale=gainmap_downscale)
     info["path"] = path

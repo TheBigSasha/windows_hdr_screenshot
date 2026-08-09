@@ -27,6 +27,7 @@ import re
 
 import numpy as np
 
+from .codecs import capabilities_payload
 from .core import color, pipeline
 
 log = logging.getLogger(__name__)
@@ -101,6 +102,10 @@ def capture_to_dict(display, result: pipeline.CaptureResult, info: dict,
         "width": int(w),
         "height": int(h),
         "encoded_hdr": bool(info.get("hdr")),
+        "requested_profile": info.get("requested_profile"),
+        "actual_profile": info.get("actual_profile"),
+        "provider": info.get("provider"),
+        "provider_version": info.get("provider_version"),
         "hdr_content": bool(result.hdr_capable_content),
         "is_hdr_live": bool(result.is_hdr),
         "peak_nits": round(float(st.get("peak_nits", 0.0)), 1),
@@ -131,7 +136,8 @@ def captures_to_json(results) -> str:
         display, result, info = row[0], row[1], row[2]
         preview = row[3] if len(row) > 3 else None
         caps.append(capture_to_dict(display, result, info, preview))
-    return _dumps({"captures": caps, "notes": PREVIEW_NOTE})
+    return _dumps({"captures": caps, "capabilities": capabilities_payload(),
+                   "notes": PREVIEW_NOTE})
 
 
 # --------------------------------------------------------------------------- #
@@ -186,7 +192,7 @@ def _parse_ultrahdr(path: str, data: bytes) -> dict:
 
 
 def _parse_exr(path: str) -> dict:
-    import OpenEXR
+    import OpenEXR  # pyright: ignore[reportMissingImports]
     f = OpenEXR.File(path)
     part = f.parts[0]
     chans = list(part.channels.keys())
@@ -217,7 +223,7 @@ def _parse_exr(path: str) -> dict:
 
 
 def _parse_heif(path: str, fmt: str) -> dict:
-    import pillow_heif
+    import pillow_heif  # pyright: ignore[reportMissingImports]
     im = pillow_heif.open_heif(path, convert_hdr_to_8bit=False)[0]
     n = im.info.get("nclx_profile", {}) or {}
     bit_depth = im.info.get("bit_depth")
@@ -362,7 +368,7 @@ def write_preview_from_file(path: str, out_png: str) -> str:
     fmt = _detect_format(path, head)
     from PIL import Image
     if fmt == "exr":
-        import OpenEXR
+        import OpenEXR  # pyright: ignore[reportMissingImports]
         part = OpenEXR.File(path).parts[0]
         try:
             rgb = part.channels["RGB"].pixels
@@ -370,7 +376,7 @@ def write_preview_from_file(path: str, out_png: str) -> str:
             rgb = np.stack([part.channels[c].pixels for c in ("R", "G", "B")], axis=-1)
         return write_preview_from_linear(np.asarray(rgb, np.float32), 80.0, out_png)
     if fmt in ("heic", "heif"):
-        import pillow_heif
+        import pillow_heif  # pyright: ignore[reportMissingImports]
         im = pillow_heif.open_heif(path, convert_hdr_to_8bit=True)[0].to_pillow()
         im.convert("RGB").save(out_png, format="PNG")
         return out_png

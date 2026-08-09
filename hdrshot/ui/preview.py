@@ -29,12 +29,13 @@ from .workers import EncodeWorker
 # (id, label, description)
 FORMAT_ITEMS = [
     ("auto", "Auto", "best format for the content"),
-    ("ultrahdr", "UltraHDR JPEG", "SDR JPEG + gain map · opens everywhere, HDR on capable viewers"),
+    ("ultrahdr", "UltraHDR JPEG", "SDR JPEG + gain map · HDR on compatible viewers"),
     ("exr", "OpenEXR", "lossless linear scRGB · editing / archival"),
     ("heic", "HEIC (PQ)", "10-bit BT.2020 PQ · needs the [heic] extra"),
     ("png", "PNG", "lossless 8-bit SDR"),
     ("jpeg", "JPEG", "8-bit SDR"),
-    ("avif", "AVIF", "10-bit PQ with [avif-hdr], else 8-bit SDR"),
+    ("avif-sdr", "AVIF (SDR)", "8-bit SDR · needs the [avif-sdr] extra"),
+    ("avif-hdr", "AVIF (HDR PQ)", "10-bit BT.2020 PQ · needs the [avif-hdr] extra"),
 ]
 
 
@@ -132,17 +133,21 @@ class PreviewWindow(QWidget):
         root.addLayout(br)
 
     def _populate_formats(self):
-        from ..encoders import heic
+        from ..codecs import capability
         is_hdr = self.result.hdr_capable_content
-        heic_ok = heic.available()
-        default = (self.config.default_format() if self.config else "auto")
+        default = (self.config.effective_default_format() if self.config else "auto")
         for fid, label, _ in FORMAT_ITEMS:
             self.combo.addItem(label, fid)
-            if fid == "heic" and not heic_ok:
+            profile = ("avif-hdr" if fid == "avif-hdr" else
+                       "avif-sdr" if fid == "avif-sdr" else fid)
+            cap = None if fid == "auto" else capability(profile)
+            if cap is not None and not cap.available:
                 idx = self.combo.count() - 1
                 self.combo.model().item(idx).setEnabled(False)
-                self.combo.setItemData(idx, "install hdrshot[heic] to enable", Qt.ToolTipRole)
+                self.combo.setItemData(idx, cap.reason or cap.status, Qt.ToolTipRole)
         # Select the configured default, else UltraHDR for HDR / PNG for SDR.
+        if default == "avif":
+            default = "avif-hdr" if is_hdr else "avif-sdr"
         want = default if default != "auto" else ("ultrahdr" if is_hdr else "png")
         for i in range(self.combo.count()):
             if self.combo.itemData(i) == want and self.combo.model().item(i).isEnabled():

@@ -18,10 +18,11 @@ import logging
 import sys
 
 from . import __version__
+from .codecs import USER_FORMATS, capabilities_payload
 from .core import pipeline
 from .core.types import virtual_desktop_bounds
 
-FORMATS = ["auto", "ultrahdr", "exr", "heic", "png", "jpeg", "avif"]
+FORMATS = list(USER_FORMATS)
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -114,6 +115,11 @@ def cmd_selftest(args) -> int:
     return run_selftest(args.out)
 
 
+def cmd_capabilities(args) -> int:
+    print(json.dumps(capabilities_payload(), indent=2))
+    return 0
+
+
 def cmd_parse(args) -> int:
     from .agentcli import cmd_parse as _run
     return _run(args)
@@ -188,6 +194,9 @@ def build_parser() -> argparse.ArgumentParser:
     ps = sub.add_parser("selftest", help="synthesise HDR and write every format")
     ps.add_argument("--out", default=None)
 
+    pcap = sub.add_parser("capabilities", help="report exact runtime codec profiles as JSON")
+    pcap.add_argument("--json", action="store_true", default=True, help="(always on)")
+
     return p
 
 
@@ -196,7 +205,7 @@ def main(argv=None) -> int:
     _setup_logging(getattr(args, "verbose", False))
     handlers = {"info": cmd_info, "full": cmd_full, "region": cmd_region,
                 "capture": cmd_capture, "parse": cmd_parse, "check": cmd_check,
-                "selftest": cmd_selftest, None: cmd_gui}
+                "selftest": cmd_selftest, "capabilities": cmd_capabilities, None: cmd_gui}
     try:
         return handlers[args.cmd](args)
     except (KeyboardInterrupt, SystemExit):

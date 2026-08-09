@@ -1,63 +1,31 @@
-"""True 10-bit BT.2020 PQ HDR AVIF via libavif (issue #10).
-
-The pip ``pillow-avif-plugin`` wheels are 8-bit with no CICP control, so they can
-only write SDR AVIF. ``imagecodecs`` bundles a full libavif that can emit 10-bit
-with an nclx colour profile (primaries 9 / transfer 16 / matrix 9 = BT.2020 PQ).
-
-This is an **optional extra** (``pip install hdrshot[avif-hdr]``). When it is not
-installed, :func:`available` returns ``False`` and the pipeline falls back to an
-8-bit SDR AVIF (with a logged warning).
-"""
+"""True 10-bit BT.2020 PQ HDR AVIF via imagecodecs/libavif."""
 from __future__ import annotations
 
-# imagecodecs is the optional [avif-hdr] extra; absence is handled at runtime, and
-# its avif_encode kwargs vary by version (older wheels lack the nclx params), so we
-# don't let the type checker be strict about that call.
-# pyright: reportMissingImports=false, reportCallIssue=false
-import inspect
-import logging
 import struct
 
 import numpy as np
 
 from ..core import color
 
-log = logging.getLogger(__name__)
-
-CP_BT2020 = 9   # H.273 colour primaries (== imagecodecs AVIF.COLOR_PRIMARIES.BT2020)
-TC_PQ = 16      # H.273 transfer characteristics (SMPTE ST 2084 PQ)
-MC_BT2020_NCL = 9  # H.273 matrix coefficients (BT.2020 non-constant luminance)
+CP_BT2020 = 9
+TC_PQ = 16
+MC_BT2020_NCL = 9
 
 
 def available() -> bool:
-    """True if imagecodecs has a working AVIF codec that accepts the nclx params.
-
-    Older imagecodecs wheels (e.g. the last ones built for Python 3.10) ship an
-    ``avif_encode`` without the ``primaries``/``transfer``/``matrix`` kwargs, so
-    they can't tag 10-bit PQ. In that case we report unavailable and the pipeline
-    falls back to SDR AVIF rather than raising.
-    """
-    try:
-        import imagecodecs
-    except Exception:
-        return False
-    if not bool(getattr(getattr(imagecodecs, "AVIF", None), "available", False)):
-        return False
-    try:
-        params = inspect.signature(imagecodecs.avif_encode).parameters
-    except (TypeError, ValueError):
-        return True  # non-introspectable Cython builtin — assume a modern build
-    return "primaries" in params
+    """Return the registry's tri-state probe as a compatibility boolean."""
+    from ..codecs import capability
+    return capability("avif-hdr").available
 
 
 def write_avif_pq(path: str, linear: np.ndarray, quality: int = 90) -> None:
-    """Write a 10-bit BT.2020 PQ HDR AVIF from an scRGB FP16 buffer."""
-    import imagecodecs
+    """Write a 10-bit BT.2020 PQ HDR AVIF from an scRGB buffer."""
+    import imagecodecs  # pyright: ignore[reportMissingImports]
 
-    pq10 = color.scrgb_to_pq_bt2020_u16(linear, bit_depth=10)  # (H, W, 3) uint16, 10-bit values
+    pq10 = color.scrgb_to_pq_bt2020_u16(linear, bit_depth=10)
     encoded = imagecodecs.avif_encode(
         np.ascontiguousarray(pq10),
-        level=max(0, min(100, quality)),   # imagecodecs: 0..100 quality (100 = lossless)
+        level=max(0, min(100, quality)),
         bitspersample=10,
         pixelformat="yuv444",
         primaries=CP_BT2020,
@@ -69,19 +37,13 @@ def write_avif_pq(path: str, linear: np.ndarray, quality: int = 90) -> None:
 
 
 def probe(path: str) -> dict | None:
-    """Return {bit_depth, width, height, transfer_characteristics, color_primaries,
-    matrix_coefficients} for an AVIF, or None if it can't be read.
-
-    imagecodecs doesn't surface the nclx profile on decode, so the CICP is parsed
-    straight out of the file's ``colr``/``nclx`` box.
-    """
+    """Return decoded dimensions and the AVIF nclx colour profile."""
     try:
-        import imagecodecs
+        import imagecodecs  # pyright: ignore[reportMissingImports]
         with open(path, "rb") as fp:
             data = fp.read()
         arr = np.asarray(imagecodecs.avif_decode(data))
-    except Exception as e:
-        log.debug("avif probe failed: %s", e)
+    except Exception:
         return None
     bit_depth = 10 if arr.dtype == np.uint16 else 8
     h, w = arr.shape[:2]
@@ -95,10 +57,9 @@ def probe(path: str) -> dict | None:
 
 
 def _read_nclx(data: bytes) -> dict | None:
-    """Parse the ISO-BMFF ``colr`` box with ``nclx`` colour type: after the
-    'nclx' fourcc come three big-endian uint16 (primaries, transfer, matrix)."""
+    """Parse an ISO-BMFF ``colr`` box carrying an ``nclx`` profile."""
     i = data.find(b"nclx")
-    if i == -1 or i + 4 + 6 > len(data):
+    if i == -1 or i + 10 > len(data):
         return None
     cp, tc, mc = struct.unpack_from(">HHH", data, i + 4)
     return {"color_primaries": cp, "transfer_characteristics": tc,

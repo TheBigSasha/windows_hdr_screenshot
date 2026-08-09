@@ -22,15 +22,12 @@ MC_BT2020_NCL = 9  # H.273 matrix coefficients (BT.2020 non-constant luminance)
 
 def available() -> bool:
     """True if a working HEVC-encoding pillow-heif is importable."""
-    try:
-        import pillow_heif  # noqa: F401
-    except Exception:
-        return False
-    return True
+    from ..codecs import capability
+    return capability("heic").available
 
 
 def write_heic_pq(path: str, linear: np.ndarray, quality: int = 90) -> None:
-    import pillow_heif
+    import pillow_heif  # pyright: ignore[reportMissingImports]
 
     h, w = linear.shape[:2]
     # 16-bit PQ signal; pillow-heif emits 10-bit (top 10 bits) unless 12-bit opt.

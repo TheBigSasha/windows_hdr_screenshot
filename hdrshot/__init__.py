@@ -1,9 +1,9 @@
 """hdrshot - True HDR screenshots on Windows.
 
-Captures the desktop as scRGB FP16 (the color space Windows composites HDR in)
-and saves it losslessly (EXR), as a gain-map UltraHDR JPEG (the macOS-equivalent
-HDR-in-a-JPEG format), 10-bit PQ HEIC, or 10-bit PQ AVIF. Falls back to standard
-SDR encodes (PNG / JPEG / AVIF) when no HDR content is present.
+Captures the desktop as scRGB FP16 and writes strict, explicit output profiles.
+The runtime codec registry is shared by the pipeline, UI, CLI, configuration,
+self-test, and agent JSON; unavailable profiles are reported instead of being
+silently converted to another representation.
 
 The package is layered so the pure parts import on any OS:
 
@@ -16,4 +16,4 @@ This module is the single source of the version string; ``pyproject.toml`` reads
 it back via ``[tool.setuptools.dynamic]``.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

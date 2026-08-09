@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from hdrshot import agentcli
+from hdrshot.codecs import CodecUnavailableError, capabilities_payload, capability
 from hdrshot.config import Config
 from hdrshot.core import color, pipeline
 from hdrshot.core.types import DisplayInfo
@@ -182,3 +183,23 @@ def test_gainmap_capacities_strictly_separated():
     flat_sdr = np.full((16, 16, 3), 0.5, np.float32)
     _, meta2 = compute_gainmap(flat_sdr, 80.0)
     assert meta2["cap_max_log2"] > meta2["cap_min_log2"]
+
+
+def test_capability_registry_exposes_structured_statuses():
+    payload = capabilities_payload()
+    profiles = {entry["profile"]: entry for entry in payload["profiles"]}
+    assert set(profiles) == {"ultrahdr", "exr", "heic", "png", "jpeg",
+                             "avif-sdr", "avif-hdr"}
+    assert profiles["ultrahdr"]["status"] == "available"
+    assert profiles["ultrahdr"]["hdr_representation"] == "gain_map"
+    assert all(entry["status"] in {"available", "missing", "broken", "excluded"}
+               for entry in profiles.values())
+
+
+def test_explicit_hdr_avif_never_falls_back_to_sdr(tmp_path, hdr_scene):
+    cap = capability("avif-hdr")
+    if cap.available:
+        pytest.skip("HDR AVIF provider is installed in this environment")
+    result = _result(hdr_scene)
+    with pytest.raises(CodecUnavailableError):
+        pipeline.encode(result, "avif", str(tmp_path / "must-not-be-sdr.avif"))

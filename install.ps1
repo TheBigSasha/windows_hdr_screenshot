@@ -5,59 +5,124 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = "TheBigSasha/windows_hdr_screenshot"
 $machine = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
-
-if ($machine -notmatch "(?i)ARM64") {
-    throw "This installer is for native Windows ARM64. Use the x64 release on x64 Windows."
+$assetSuffix = if ($machine -match "(?i)^ARM64$") { "win-arm64" } elseif ($machine -match "(?i)^(AMD64|x64)$") { "win64" } else { $null }
+if (-not $assetSuffix) {
+    throw "Unsupported Windows architecture '$machine'. HDR Shot releases support x64 and ARM64."
 }
 
-$release = Invoke-RestMethod -Headers @{ "User-Agent" = "HDRShot-installer" } `
-    -Uri "https://api.github.com/repos/$repo/releases/latest"
-$asset = $release.assets |
-    Where-Object { $_.name -like "HDRShot-*-win-arm64.zip" } |
-    Select-Object -First 1
-if (-not $asset) {
-    throw "No ARM64 release asset was found for $repo."
+function Get-PeMachine([string] $Path) {
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 64 -or [Text.Encoding]::ASCII.GetString($bytes, 0, 2) -ne "MZ") {
+        throw "$Path is not a PE executable"
+    }
+    $offset = [BitConverter]::ToInt32($bytes, 0x3c)
+    if ($offset -lt 0 -or $offset + 6 -gt $bytes.Length -or
+        [Text.Encoding]::ASCII.GetString($bytes, $offset, 4) -ne "PE`0`0") {
+        throw "$Path has an invalid PE header"
+    }
+    return ("{0:x4}" -f [BitConverter]::ToUInt16($bytes, $offset + 4))
 }
 
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("HDRShot-" + [guid]::NewGuid())
-$zip = Join-Path $tempRoot $asset.name
-$checksum = Join-Path $tempRoot ($asset.name + ".sha256")
-$expanded = Join-Path $tempRoot "expanded"
-New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 try {
-    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip
-    $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
-    $expected = $asset.digest
-    if (-not $expected) {
-        $checksumAsset = $release.assets |
-            Where-Object { $_.name -eq ($asset.name + ".sha256") } |
-            Select-Object -First 1
-        if (-not $checksumAsset) {
-            throw "The release has no SHA-256 checksum for $($asset.name)."
+    try {
+        $release = Invoke-RestMethod -Headers @{ "User-Agent" = "HDRShot-installer" } `
+            -Uri "https://api.github.com/repos/$repo/releases/latest"
+    }
+    catch {
+        throw "No stable HDR Shot release is published yet (or GitHub could not be reached). " +
+              "Use the source-development install until a verified release exists. Details: $($_.Exception.Message)"
+    }
+    $tag = [string]$release.tag_name
+    if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw "Latest release has invalid tag '$tag'." }
+    $version = $tag.Substring(1)
+    $assetName = "HDRShot-$version-$assetSuffix.zip"
+    $asset = @($release.assets | Where-Object { $_.name -eq $assetName }) | Select-Object -First 1
+    if (-not $asset) { throw "Release $tag has no exact asset '$assetName'." }
+
+    $checksumAsset = @($release.assets | Where-Object { $_.name -eq "$assetName.sha256" }) | Select-Object -First 1
+    $installPath = [IO.Path]::GetFullPath($InstallDir)
+    $parent = Split-Path -Parent $installPath
+    $leaf = Split-Path -Leaf $installPath
+    if (-not $parent -or -not $leaf) { throw "InstallDir must be a concrete directory path." }
+
+    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("HDRShot-" + [guid]::NewGuid())
+    $zip = Join-Path $tempRoot $assetName
+    $checksum = Join-Path $tempRoot "$assetName.sha256"
+    $expanded = Join-Path $tempRoot "expanded"
+    $stage = Join-Path $parent (".$leaf.new." + [guid]::NewGuid())
+    $rollback = Join-Path $parent (".$leaf.rollback.$version." + [guid]::NewGuid())
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+
+    try {
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip
+        $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expected = [string]$asset.digest
+        if (-not $expected -and $checksumAsset) {
+            Invoke-WebRequest -Uri $checksumAsset.browser_download_url -OutFile $checksum
+            $expected = (Get-Content -LiteralPath $checksum | Select-Object -First 1).Split()[0]
         }
-        Invoke-WebRequest -Uri $checksumAsset.browser_download_url -OutFile $checksum
-        $expected = (Get-Content -LiteralPath $checksum | Select-Object -First 1).Split()[0]
-    }
-    $expected = $expected.Replace("sha256:", "").ToLowerInvariant()
-    if ($actual.ToLowerInvariant() -ne $expected) {
-        throw "The downloaded release failed its SHA-256 check."
-    }
+        if (-not $expected) { throw "Release $tag has no SHA-256 digest for $assetName." }
+        $expected = $expected.Replace("sha256:", "").Trim().ToLowerInvariant()
+        if ($actual -ne $expected) { throw "Downloaded $assetName failed SHA-256 verification." }
 
-    Expand-Archive -LiteralPath $zip -DestinationPath $expanded
-    $bundle = Join-Path $expanded "HDRShot"
-    if (-not (Test-Path -LiteralPath (Join-Path $bundle "HDRShot.exe"))) {
-        throw "The release archive did not contain HDRShot\\HDRShot.exe."
-    }
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Get-ChildItem -LiteralPath $bundle -Force | Copy-Item -Destination $InstallDir -Recurse -Force
-}
-finally {
-    if (Test-Path $tempRoot) {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force
-    }
-}
+        Expand-Archive -LiteralPath $zip -DestinationPath $expanded
+        $bundle = Join-Path $expanded "HDRShot"
+        $gui = Join-Path $bundle "HDRShot.exe"
+        $cli = Join-Path $bundle "hdrshot-cli.exe"
+        foreach ($exe in @($gui, $cli)) {
+            if (-not (Test-Path -LiteralPath $exe)) { throw "Archive is missing $([IO.Path]::GetFileName($exe))." }
+            $expectedMachine = if ($assetSuffix -eq "win-arm64") { "aa64" } else { "8664" }
+            if ((Get-PeMachine $exe) -ne $expectedMachine) {
+                throw "$([IO.Path]::GetFileName($exe)) has the wrong PE architecture."
+            }
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $bundle "bundle-capabilities.json"))) {
+            throw "Archive is missing its capability contract."
+        }
 
-$exe = Join-Path $InstallDir "HDRShot.exe"
-Write-Output "HDR Shot $($release.tag_name) installed to $InstallDir"
-Write-Output "Launching $exe"
-Start-Process -FilePath $exe
+        # Copy into a sibling directory. No existing install is touched until the
+        # complete staged tree passes all executable and capability checks.
+        Copy-Item -LiteralPath $bundle -Destination $stage -Recurse -Force
+        $stageCli = Join-Path $stage "hdrshot-cli.exe"
+        $reportedVersion = (& $stageCli --version | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $reportedVersion -notmatch [regex]::Escape($version)) {
+            throw "Staged CLI version mismatch: $reportedVersion"
+        }
+        $caps = (& $stageCli capabilities --json | ConvertFrom-Json)
+        if ($LASTEXITCODE -ne 0 -or -not $caps.available_profiles) {
+            throw "Staged capability contract could not be read."
+        }
+        $smoke = Join-Path $tempRoot "selftest"
+        & $stageCli selftest --out $smoke
+        if ($LASTEXITCODE -ne 0) { throw "Staged bundle selftest failed." }
+
+        $oldMoved = $false
+        try {
+            if (Test-Path -LiteralPath $installPath) {
+                Move-Item -LiteralPath $installPath -Destination $rollback
+                $oldMoved = $true
+            }
+            Move-Item -LiteralPath $stage -Destination $installPath
+            $stage = $null
+        }
+        catch {
+            if ($oldMoved -and -not (Test-Path -LiteralPath $installPath)) {
+                Move-Item -LiteralPath $rollback -Destination $installPath
+            }
+            throw "Install swap failed; previous version was restored when possible. $($_.Exception.Message)"
+        }
+
+        $exe = Join-Path $installPath "HDRShot.exe"
+        Write-Output "HDR Shot $tag installed to $installPath"
+        if ($oldMoved) { Write-Output "Previous version retained at $rollback for rollback." }
+        Start-Process -FilePath $exe
+    }
+    finally {
+        if ($stage -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force }
+        if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
+    }
+}
+catch {
+    throw $_
+}

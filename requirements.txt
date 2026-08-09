@@ -5,7 +5,7 @@
 
 # Headless / agent install (no Qt):   pip install -e .
 # Optional extras:
-#   .[exr]       lossless OpenEXR output (not available as a native wheel on some ARM64 hosts)
+#   .[exr]       lossless OpenEXR output
 #   .[avif-sdr]  8-bit SDR AVIF output (not available as a native wheel on some ARM64 hosts)
 #   .[heic]      10-bit PQ HEIC output (pulls x265/GPL — see THIRD_PARTY_NOTICES.md)
 #   .[avif-hdr]  true 10-bit PQ HDR AVIF via imagecodecs

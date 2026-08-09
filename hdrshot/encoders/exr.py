@@ -11,16 +11,13 @@ import numpy as np
 
 def available() -> bool:
     """Return whether the optional OpenEXR binding is installed."""
-    try:
-        import OpenEXR  # noqa: F401
-    except Exception:
-        return False
-    return True
+    from ..codecs import capability
+    return capability("exr").available
 
 
 def write_exr(path: str, linear: np.ndarray, sdr_white_nits: float = 80.0) -> None:
     try:
-        import OpenEXR
+        import OpenEXR  # pyright: ignore[reportMissingImports]
     except Exception as e:
         raise RuntimeError(
             'EXR output needs the optional "exr" extra: pip install "hdrshot[exr]"') from e

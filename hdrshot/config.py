@@ -12,10 +12,12 @@ import os
 import sys
 from dataclasses import dataclass, field
 
+from .codecs import USER_FORMATS, capability
+
 log = logging.getLogger(__name__)
 
 DEFAULTS: dict = {
-    "default_format": "auto",          # auto/ultrahdr/exr/heic/png/jpeg/avif
+    "default_format": "auto",          # auto/ultrahdr/exr/heic/png/jpeg/avif-*
     "save_dir": "",                    # "" => Pictures/Screenshots (known folder)
     "filename_template": "{hdr}Screenshot {date} {time}",
     "hotkey_region": "ctrl+shift+h",
@@ -27,7 +29,7 @@ DEFAULTS: dict = {
     "run_at_login": False,             # start with Windows
 }
 
-_VALID_FORMATS = {"auto", "ultrahdr", "exr", "heic", "png", "jpeg", "avif"}
+_VALID_FORMATS = set(USER_FORMATS)
 
 
 def _type_ok(value, default) -> bool:
@@ -109,6 +111,22 @@ class Config:
     def default_format(self) -> str:
         f = self.get("default_format")
         return f if f in _VALID_FORMATS else "auto"
+
+    def effective_default_format(self) -> str:
+        """Return a configured format only when its explicit profile is usable.
+
+        ``avif`` remains a compatibility alias and is resolved per scene by the
+        pipeline. Optional profiles that are missing or broken are reconciled to
+        ``auto`` so a stale config cannot make the GUI fail on every capture.
+        """
+        fmt = self.default_format()
+        if fmt in {"auto", "ultrahdr", "png", "jpeg", "avif"}:
+            return fmt
+        cap = capability(fmt)
+        if cap.available:
+            return fmt
+        log.warning("configured format %r is %s; using auto", fmt, cap.status)
+        return "auto"
 
     def resolved_save_dir(self) -> str:
         """The configured save dir, or the default Pictures/Screenshots folder.

@@ -33,7 +33,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = ["PySide6>=6.7"]                    # LGPL-3.0 — bundle as separate shared libs
-exr = ["OpenEXR>=3.3"]                    # optional; no native wheel on some ARM64 hosts
+exr = ["OpenEXR>=3.3"]                    # optional profile; resolve per target
 avif-sdr = ["pillow-avif-plugin>=1.4"]    # optional; 8-bit SDR AVIF
 heic = ["pillow-heif>=1.0"]              # x265/GPL — NOT bundled in binary releases
 avif-hdr = ["imagecodecs>=2024.1.1"]     # true 10-bit BT.2020 PQ HDR AVIF (BSD)
@@ -49,10 +49,6 @@ dev = [
     "ruff>=0.6",
     "pyright>=1.1.380",
     "hdrshot[gui]",
-    "OpenEXR>=3.3; platform_machine != 'ARM64'",
-    "pillow-avif-plugin>=1.4; platform_machine != 'ARM64'",
-    "pillow-heif>=1.0; platform_machine != 'ARM64'",
-    "imagecodecs>=2024.1.1; platform_machine != 'ARM64'",
 ]
 
 [project.urls]
@@ -77,6 +73,7 @@ packages = [
     "hdrshot",
     "hdrshot.core",
     "hdrshot.encoders",
+    "hdrshot.codecs",
     "hdrshot.backends",
     "hdrshot.backends.win32",
     "hdrshot.ui",
@@ -122,4 +119,3 @@ venvPath = "."
 venv = ".venv"
 pythonVersion = "3.10"
 reportMissingModuleSource = false
-reportMissingImports = false

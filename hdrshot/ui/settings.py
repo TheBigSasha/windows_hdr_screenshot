@@ -6,6 +6,7 @@ Validates the filename template and hotkeys before saving.
 """
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -24,9 +25,10 @@ from PySide6.QtWidgets import (
 )
 
 from .. import hotkeys, startup
+from ..codecs import USER_FORMATS, capability
 from ..core import pipeline
 
-FORMATS = ["auto", "ultrahdr", "exr", "heic", "png", "jpeg", "avif"]
+FORMATS = list(USER_FORMATS)
 
 
 class PreferencesDialog(QDialog):
@@ -45,7 +47,15 @@ class PreferencesDialog(QDialog):
         form.setSpacing(10)
 
         self.fmt = QComboBox()
-        self.fmt.addItems(FORMATS)
+        for fmt in FORMATS:
+            self.fmt.addItem(fmt)
+            if fmt in {"auto", "avif"}:
+                continue
+            cap = capability(fmt)
+            if not cap.available:
+                idx = self.fmt.count() - 1
+                self.fmt.model().item(idx).setEnabled(False)
+                self.fmt.setItemData(idx, cap.reason or cap.status, Qt.ToolTipRole)
         self.fmt.setCurrentText(self.config.get("default_format"))
         form.addRow("Default format", self.fmt)
 

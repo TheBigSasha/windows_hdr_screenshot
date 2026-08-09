@@ -71,10 +71,11 @@ hdrshot check ./shots/shot.jpg --min-stops 2    # also require >= 2 stops headro
 | Format     | HDR? | Use when |
 |------------|------|----------|
 | `auto`     | —    | Default. UltraHDR for HDR content, PNG for SDR. |
-| `ultrahdr` | yes  | Portable "HDR-in-a-JPEG" (gain map). Opens everywhere; HDR on Chrome/Windows Photos/Android (+ Apple with ISO metadata). Best default. |
+| `ultrahdr` | yes  | Portable "HDR-in-a-JPEG" (gain map). The SDR base is broadly readable; HDR rendering depends on the viewer and display. Best default. |
 | `exr`      | yes  | Lossless linear scRGB. Exact luminance for analysis/archival. `parse` reports precise `peak_nits`. |
 | `heic`     | yes  | 10-bit BT.2020 PQ (needs the `[heic]` extra). |
-| `avif`     | yes* | 10-bit BT.2020 PQ with the `[avif-hdr]` extra; else 8-bit SDR. |
+| `avif-hdr` | yes  | Explicit 10-bit BT.2020 PQ (needs the `[avif-hdr]` extra). Never falls back. |
+| `avif-sdr` | no   | Explicit 8-bit SDR (needs the `[avif-sdr]` extra). |
 | `png`/`jpeg` | no | Plain SDR. |
 
 For **exact numeric analysis**, capture `exr` and `parse` it — `peak_nits` is the
@@ -109,10 +110,25 @@ hdrshot parse ./cmp/*.exr      # EXR: exact peak_nits
 hdrshot parse ./cmp/*.heic     # HEIC: 10-bit PQ nclx (transfer 16, primaries 9)
 ```
 
+### 5. Check the exact encoder contract
+```bash
+hdrshot capabilities --json
+```
+Every capture JSON includes `requested_profile`, `actual_profile`, `provider`,
+and `provider_version`. A profile is `available`, `missing`, `broken`, or
+`excluded`. An explicit unavailable profile fails; HDR is never silently
+changed to SDR. In a frozen release, `selftest` also compares the executable's
+available profile set with its bundled capability manifest.
+
 ## Gotchas
 
+- Explicit codec profiles are strict. If `capabilities --json` reports a profile
+  as missing, broken, or excluded, capture fails with an actionable error; HDR
+  AVIF is never silently written as SDR AVIF.
+
 - **No HDR display / HDR off** → captures succeed but `is_hdr_live` is false and
-  format falls back to SDR. That's correct, not a bug.
+  `auto` selects an SDR-safe format. An explicitly requested HDR profile never
+  changes representation.
 - **Headless CI / no interactive desktop** can't do a real DXGI grab; use
   `hdrshot selftest` to exercise the encode path on a synthetic HDR scene.
 - **Rotated (portrait) monitors** are best-effort; verify framing in the preview.

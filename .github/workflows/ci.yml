@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main, release-hardening]
   pull_request:
@@ -20,8 +21,8 @@ jobs:
       matrix:
         python: ["3.10", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v5
         with:
           python-version: ${{ matrix.python }}
       - name: Create venv and install
@@ -44,7 +45,7 @@ jobs:
         run: .venv/Scripts/python -m hdrshot selftest --out selftest-artifacts
       - name: Upload selftest artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: selftest-${{ matrix.python }}
           path: selftest-artifacts/
@@ -56,8 +57,8 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v5
         with:
           python-version: "3.12"
       - name: Create venv and install (base + dev tools, no Win32)
@@ -71,3 +72,20 @@ jobs:
         run: .venv/bin/python -m pytest -q
       - name: Selftest runs off-Windows
         run: .venv/bin/python -m hdrshot selftest --out selftest-linux
+
+  # Do not use a broad ARM64 exclusion marker for optional codecs. This lane
+  # proves the current native imagecodecs wheel is exercised on the target.
+  windows-arm64-codecs:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v5
+        with:
+          python-version: "3.12"
+          architecture: arm64
+      - name: Install and probe the native HDR AVIF profile
+        shell: bash
+        run: |
+          python -m pip install -e .[avif-hdr] pytest
+          python -c "from hdrshot.codecs import capability; c = capability('avif-hdr'); assert c.available, c"
+          python -m pytest -q tests/test_avif_hdr.py

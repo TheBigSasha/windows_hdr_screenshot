@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "architecture": "build-time",
+  "expected_profiles": ["ultrahdr", "png", "jpeg"]
+}

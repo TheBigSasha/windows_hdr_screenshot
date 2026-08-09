@@ -1,91 +1,251 @@
 name: Release
 
-# Build a standalone Windows bundle and attach it to a GitHub Release when a
-# version tag is pushed (e.g. `git tag v0.2.0 && git push --tags`).
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*.*.*"]
   workflow_dispatch:
 
+# Build and verification jobs are read-only. Only the final tag-gated publish
+# job receives contents:write and the attestation permissions.
 permissions:
-  contents: write
+  contents: read
+
+env:
+  EXPECTED_PROFILES: ultrahdr,png,jpeg
 
 jobs:
-  windows-bundle:
-    runs-on: windows-11-arm
+  quality:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  build:
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            python_arch: x64
+            asset_arch: x64
+            asset_suffix: win64
+          - runner: windows-11-arm
+            python_arch: arm64
+            asset_arch: arm64
+            asset_suffix: win-arm64
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out exact tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up native Python
+        uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v5
         with:
           python-version: "3.12"
-          architecture: arm64
+          architecture: ${{ matrix.python_arch }}
 
-      - name: Install app + PyInstaller
-        shell: bash
+      - name: Validate tag and package identity
+        shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          # Bundle the GUI. HEIC (x265/GPL) and imagecodecs are intentionally NOT
-          # installed here so they are not bundled (see THIRD_PARTY_NOTICES.md).
-          python -m pip install -e .[gui] pyinstaller
+          $runtime = (& python -c "import hdrshot; print(hdrshot.__version__)").Trim()
+          if ($env:GITHUB_REF -like 'refs/tags/*') {
+            $tagVersion = $env:GITHUB_REF_NAME.Substring(1)
+            if ($runtime -ne $tagVersion) { throw "tag $tagVersion != runtime $runtime" }
+          }
+          if ((Get-Content pyproject.toml -Raw) -notmatch 'dynamic = \["version"\]') {
+            throw 'package metadata is not single-sourced from runtime version'
+          }
 
-      - name: Build onedir bundle
+      - name: Write frozen capability contract
+        shell: pwsh
+        run: |
+          $manifest = @{
+            schema_version = 1
+            architecture = '${{ matrix.asset_arch }}'
+            expected_profiles = @('ultrahdr', 'png', 'jpeg')
+          } | ConvertTo-Json -Depth 4
+          $manifest | Set-Content -Encoding utf8 packaging/bundle-capabilities.json
+
+      - name: Install locked release environment
+        run: |
+          python -m pip install --disable-pip-version-check --no-cache-dir -c packaging/constraints-release.txt -e ".[gui]" pyinstaller
+          python -m pip check
+
+      - name: Build native onedir bundle
         working-directory: packaging
-        run: pyinstaller hdrshot.spec --noconfirm
+        run: pyinstaller hdrshot.spec --noconfirm --clean
 
-      - name: Resolve version
-        id: ver
-        shell: bash
-        run: |
-          V=$(python -c "import hdrshot; print(hdrshot.__version__)")
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-
-      - name: Zip the bundle
+      - name: Assemble and smoke-test release artifact
         shell: pwsh
         run: |
-          $name = "HDRShot-${{ steps.ver.outputs.version }}-win-arm64"
+          $version = (& python -c "import hdrshot; print(hdrshot.__version__)").Trim()
+          $name = "HDRShot-$version-${{ matrix.asset_suffix }}"
+          $releaseDir = Join-Path $PWD "release-artifacts"
+          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
           Copy-Item LICENSE, THIRD_PARTY_NOTICES.md, README.md packaging/dist/HDRShot/
-          # PySide6/Qt is LGPL-3.0: ship the license text alongside the libraries.
-          Invoke-WebRequest https://www.gnu.org/licenses/lgpl-3.0.txt -OutFile packaging/dist/HDRShot/LICENSE.LGPL-3.0.txt
-          # Zip the FOLDER (not its contents): the winget manifest's
-          # NestedInstallerFiles path is HDRShot\HDRShot.exe.
-          Compress-Archive -Path packaging/dist/HDRShot -DestinationPath "$name.zip"
-          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $name.zip" | Set-Content -Encoding ascii "$name.zip.sha256"
-          echo "ASSET=$name.zip" >> $env:GITHUB_ENV
+          Copy-Item packaging/bundle-capabilities.json packaging/dist/HDRShot/
+          $licensePath = Join-Path $releaseDir 'LICENSE.LGPL-3.0.txt'
+          Invoke-WebRequest -Uri 'https://www.gnu.org/licenses/lgpl-3.0.txt' -OutFile $licensePath
+          $licenseHash = (Get-FileHash -LiteralPath $licensePath -Algorithm SHA256).Hash
+          if ($licenseHash -ne 'E3A994D82E644B03A792A930F574002658412F62407F5FEE083F2555C5F23118') {
+            throw "LGPL text digest changed: $licenseHash"
+          }
+          Copy-Item $licensePath packaging/dist/HDRShot/
+          Compress-Archive -Path packaging/dist/HDRShot -DestinationPath (Join-Path $releaseDir "$name.zip")
+          $zip = Join-Path $releaseDir "$name.zip"
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name.zip" | Set-Content -Encoding ascii (Join-Path $releaseDir "$name.zip.sha256")
+          & packaging/dist/HDRShot/hdrshot-cli.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'CLI version smoke test failed' }
 
-      - name: Smoke-test the bundle (console CLI: output + exit codes checked)
+      - name: Generate dependency SBOM
         shell: pwsh
         run: |
-          # The windowed HDRShot.exe can't be exit-code-checked from a script;
-          # hdrshot-cli.exe (console subsystem) is the verifiable twin.
-          $v = & packaging/dist/HDRShot/hdrshot-cli.exe --version
-          if ($LASTEXITCODE -ne 0 -or -not $v) { throw "cli --version failed" }
-          Write-Host "version: $v"
-          & packaging/dist/HDRShot/hdrshot-cli.exe selftest --out smoke-artifacts
-          if ($LASTEXITCODE -ne 0) { throw "cli selftest failed" }
+          $version = (& python -c "import hdrshot; print(hdrshot.__version__)").Trim()
+          $name = "HDRShot-$version-${{ matrix.asset_suffix }}"
+          python packaging/generate_sbom.py --out "release-artifacts/$name.sbom.spdx.json"
 
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+      - name: Verify the build directory before upload
+        shell: pwsh
+        run: |
+          $version = (& python -c "import hdrshot; print(hdrshot.__version__)").Trim()
+          $archive = Get-ChildItem release-artifacts -Filter "HDRShot-$version-*.zip" | Select-Object -First 1
+          ./packaging/verify_bundle.ps1 -Archive $archive.FullName -ExpectedVersion $version -ExpectedArchitecture '${{ matrix.asset_arch }}' -OutputDirectory release-artifacts/build-verification
+
+      - name: Upload internal artifact only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ env.ASSET }}
-          path: |
-            ${{ env.ASSET }}
-            ${{ env.ASSET }}.sha256
+          name: bundle-${{ matrix.asset_arch }}
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+  verify:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset_arch: x64
+            asset_suffix: win64
+          - asset_arch: arm64
+            asset_suffix: win-arm64
+    runs-on: windows-2025
+    steps:
+      - name: Check out verification scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          files: |
-            ${{ env.ASSET }}
-            ${{ env.ASSET }}.sha256
-          body: |
-            Standalone Windows build of HDR Shot ${{ steps.ver.outputs.version }}.
+          sparse-checkout: |
+            packaging/verify_bundle.ps1
 
-            **Unzip and run `HDRShot\HDRShot.exe`** — no Python needed. Unsigned,
-            so SmartScreen may warn on first launch (More info → Run anyway).
-            Scripts/agents: use `HDRShot\hdrshot-cli.exe` (console build — real
-            stdout JSON and exit codes; the windowed exe has neither).
+      - name: Download exact internal artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bundle-${{ matrix.asset_arch }}
+          path: downloaded
 
-            HDR output in this bundle: UltraHDR JPEG. EXR, 10-bit PQ HEIC and HDR
-            AVIF are source-install extras; they are not bundled in this ARM64 zip.
+      - name: Extract and verify exact archive bytes
+        shell: pwsh
+        run: |
+          $archive = Get-ChildItem downloaded -Filter "HDRShot-*-${{ matrix.asset_suffix }}.zip" | Select-Object -First 1
+          if (-not $archive) { throw 'expected archive was not downloaded' }
+          $version = [regex]::Match($archive.Name, '^HDRShot-(.+)-${{ matrix.asset_suffix }}\.zip$').Groups[1].Value
+          if (-not $version) { throw "could not derive package version from $($archive.Name)" }
+          ./packaging/verify_bundle.ps1 -Archive $archive.FullName -ExpectedVersion $version -ExpectedArchitecture '${{ matrix.asset_arch }}' -OutputDirectory verification
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, verify]
+    runs-on: windows-2025
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out release metadata
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Download both verified build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: bundle-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create WinGet manifests from exact archive hashes
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $tag = $env:GITHUB_REF_NAME
+          $urlBase = "https://github.com/TheBigSasha/windows_hdr_screenshot/releases/download/$tag"
+          $x64 = Get-ChildItem release-assets -Filter "HDRShot-$version-win64.zip" | Select-Object -First 1
+          $arm = Get-ChildItem release-assets -Filter "HDRShot-$version-win-arm64.zip" | Select-Object -First 1
+          if (-not $x64 -or -not $arm) { throw 'both architecture archives are required before publishing' }
+          $x64Hash = (Get-FileHash $x64.FullName -Algorithm SHA256).Hash
+          $armHash = (Get-FileHash $arm.FullName -Algorithm SHA256).Hash
+          $winget = New-Item -ItemType Directory -Path winget-generated -Force
+          @"
+          PackageIdentifier: TheBigSasha.HDRShot
+          PackageVersion: "$version"
+          Installers:
+            - Architecture: x64
+              InstallerUrl: $urlBase/$($x64.Name)
+              InstallerSha256: $x64Hash
+            - Architecture: arm64
+              InstallerUrl: $urlBase/$($arm.Name)
+              InstallerSha256: $armHash
+          NestedInstallerType: portable
+          NestedInstallerFiles:
+            - RelativeFilePath: HDRShot\\HDRShot.exe
+              PortableCommandAlias: hdrshot-gui
+            - RelativeFilePath: HDRShot\\hdrshot-cli.exe
+              PortableCommandAlias: hdrshot
+          InstallerType: zip
+          ManifestType: installer
+          ManifestVersion: 1.6.0
+          "@ | Set-Content -Encoding utf8 (Join-Path $winget 'TheBigSasha.HDRShot.installer.yaml')
+          @"
+          PackageIdentifier: TheBigSasha.HDRShot
+          PackageVersion: "$version"
+          DefaultLocale: en-US
+          ManifestType: version
+          ManifestVersion: 1.6.0
+          "@ | Set-Content -Encoding utf8 (Join-Path $winget 'TheBigSasha.HDRShot.yaml')
+          Compress-Archive -Path winget-generated/* -DestinationPath "release-assets/TheBigSasha.HDRShot.$version.winget.zip"
+
+      - name: Generate signed build provenance for both archives
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: release-assets/HDRShot-*.zip
+
+      - name: Publish one release containing both verified assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = $tag.Substring(1)
+          @"
+          Standalone Windows builds of HDR Shot $version.
+
+          Assets are native x64 and ARM64 onedir bundles. Each archive was built,
+          extracted, capability-checked, self-tested, hashed, and attested before
+          this publish job. Use HDRShot\\HDRShot.exe for the GUI or
+          HDRShot\\hdrshot-cli.exe for scripts and agents.
+          "@ | Set-Content -Encoding utf8 release-notes.md
+          $assets = Get-ChildItem release-assets -File | Where-Object { $_.Name -match '\.(zip|sha256|json)$' } | ForEach-Object FullName
+          gh release create $tag $assets --verify-tag --title "HDR Shot $version" --notes-file release-notes.md
+
+      - name: Download published bytes and verify hashes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dir = Join-Path $PWD published-verification
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          gh release download $env:GITHUB_REF_NAME --dir $dir --pattern 'HDRShot-*.zip' --pattern 'HDRShot-*.zip.sha256'
+          foreach ($zip in Get-ChildItem $dir -Filter '*.zip') {
+            $sum = (Get-Content "$($zip.FullName).sha256" | Select-Object -First 1).Split()[0].ToLowerInvariant()
+            $actual = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($sum -ne $actual) { throw "published hash mismatch for $($zip.Name)" }
+          }

@@ -1,56 +1,58 @@
 # Packaging HDR Shot
 
-## Standalone Windows bundle (PyInstaller)
+## Standalone Windows bundle
 
-The GitHub Actions **Release** workflow (`.github/workflows/release.yml`) builds
-this automatically when you push a `v*` tag. To build locally:
+The GitHub Actions Release workflow performs this graph:
+
+```text
+tag/source identity + reusable quality suite
+  -> native package matrix [x64, arm64]
+  -> exact ZIP extraction and verification
+  -> capabilities / CLI / selftest / dependency inventory
+  -> SHA-256 files + generated WinGet manifests + provenance
+  -> protected publish job last
+```
+
+The onedir bundle contains a windowed `HDRShot.exe` and a console
+`hdrshot-cli.exe` over one shared runtime. The frozen
+`bundle-capabilities.json` contract intentionally advertises UltraHDR, PNG,
+and JPEG only; optional codec providers are excluded explicitly in the spec.
+The artifact's capability command and self-test must agree with that manifest.
+
+To build locally:
 
 ```bash
-pip install -e .[gui] pyinstaller
+pip install -c packaging/constraints-release.txt -e ".[gui]" pyinstaller
 cd packaging
-pyinstaller hdrshot.spec --noconfirm
-# -> packaging/dist/HDRShot/HDRShot.exe  (native onedir bundle)
+pyinstaller hdrshot.spec --noconfirm --clean
 ```
 
-- **onedir, not onefile**: Qt + numpy onefile extraction is slow and trips
-  antivirus, and LGPL (PySide6/Qt) requires the Qt libraries to stay as separate,
-  replaceable shared libraries — onedir satisfies both.
-- **Optional codecs are not bundled.** `OpenEXR` and `pillow-avif-plugin` have no
-  native ARM64 wheel on this host; `pillow-heif` links x265 (GPL), and
-  `imagecodecs` (HDR AVIF) is excluded for size. UltraHDR JPEG is the bundled
-  true-HDR format. See
-  [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
-- The bundle has **two exes** over one shared runtime: windowed `HDRShot.exe`
-  (the GUI — no console window, but also no usable stdout or exit codes) and
-  console `hdrshot-cli.exe` for scripts/agents (`hdrshot-cli.exe info --json`,
-  `hdrshot-cli.exe capture …`). Both accept the same arguments.
-- The bundle is built on a native Windows ARM64 runner and is **unsigned**, so SmartScreen warns on first run. Consider code
-  signing before wide distribution.
+Use `packaging/verify_bundle.ps1` against the extracted ZIP before treating a
+local build as releasable. The release workflow also generates an SPDX JSON
+dependency inventory and verifies the SHA-256 of the pinned LGPL text it ships
+alongside Qt.
 
-Fresh ARM64 Windows install (PowerShell, no Python required):
+## Installer
 
-```powershell
-irm https://raw.githubusercontent.com/TheBigSasha/windows_hdr_screenshot/main/install.ps1 | iex
-```
+`install.ps1` is a versioned-release installer for x64 and ARM64. It derives
+one exact asset name from the release tag and architecture, verifies the ZIP
+digest, validates both PE headers and the capability contract, runs CLI
+self-tests from a staged directory, then swaps the staged tree into place. A
+failed swap restores the previous tree; the previous version is retained for
+rollback after success.
+
+The installer is intentionally not advertised as a working command until a
+tagged release exists. It does not execute a mutable remote script internally.
+
+## WinGet
+
+The checked-in locale metadata is descriptive only. The final installer
+manifest is generated in the protected publish job from the exact x64 and ARM64
+archive URLs and hashes, then attached to the release as a versioned manifest
+bundle. This avoids placeholder hashes and keeps package version, tag, filename,
+and release bytes identical.
 
 ## Run at login
 
-Handled at runtime by `hdrshot/startup.py` (per-user `HKCU\...\Run` key) and
-toggled from **Preferences → "Start HDR Shot when I sign in"**. No installer
-needed.
-
-## winget
-
-Manifests are in `winget/` (schema 1.6.0), a `zip` + `portable` nested-installer
-package. Per release, update `PackageVersion`, the `InstallerUrl` and its
-`InstallerSha256` in the installer manifest, then validate and submit:
-
-```bash
-winget validate --manifest packaging/winget
-# Optionally test the install locally:
-winget install --manifest packaging/winget
-# Then open a PR to microsoft/winget-pkgs with the three files under
-#   manifests/t/TheBigSasha/HDRShot/<version>/
-```
-
-Compute the SHA256 with `Get-FileHash HDRShot-<version>-win-arm64.zip -Algorithm SHA256`.
+Handled at runtime by `hdrshot/startup.py` using the per-user Run key and
+toggled from Preferences. No installer registration is required.

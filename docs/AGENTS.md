@@ -174,3 +174,17 @@ hdrshot check "$(jq -r '.captures[0].path' cap.json)" --min-stops 1 || echo "cap
 # Deterministic HDR/SDR branch by exit code:
 if hdrshot check "$IMG" >/dev/null; then echo HDR; else echo SDR; fi
 ```
+
+## Codec capability contract
+
+Use `hdrshot capabilities --json` before selecting an explicit output profile.
+The response has one entry for each of `ultrahdr`, `exr`, `heic`, `png`, `jpeg`,
+`avif-sdr`, and `avif-hdr`. Each entry includes `available`, `status`, `reason`,
+`hdr_representation`, `provider`, and `provider_version`. `status` is one of
+`available`, `missing`, `broken`, or `excluded`.
+
+`avif` remains a compatibility alias that resolves to `avif-hdr` for HDR content
+and `avif-sdr` for SDR content. An unavailable explicit profile is an error. The
+pipeline never silently changes an HDR request to an SDR representation. Capture
+JSON records `requested_profile`, `actual_profile`, `provider`, and provider
+version so an agent can verify the artifact contract.

@@ -23,14 +23,11 @@ def write_jpeg(path: str, rgb_u8: np.ndarray, quality: int = 95) -> None:
 def write_avif_sdr(path: str, rgb_u8: np.ndarray, quality: int = 80) -> None:
     """8-bit SDR AVIF. (For true 10-bit PQ HDR AVIF see
     :mod:`hdrshot.encoders.avif_hdr`.)"""
-    import pillow_avif  # noqa: F401  registers the AVIF plugin
+    import pillow_avif  # pyright: ignore[reportMissingImports]  # noqa: F401
     _to_image(rgb_u8).save(path, format="AVIF", quality=quality)
 
 
 def avif_available() -> bool:
     """Return whether the optional 8-bit AVIF plugin is installed."""
-    try:
-        import pillow_avif  # noqa: F401
-    except Exception:
-        return False
-    return True
+    from ..codecs import capability
+    return capability("avif-sdr").available
