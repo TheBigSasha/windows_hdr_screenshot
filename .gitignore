@@ -8,12 +8,24 @@ dist/
 
 # Virtual env
 .venv/
+.venv-prod/
 venv/
 
 # Local scratch / test outputs
 scratch_out/
 *.exr
 *.heic
+artifacts/
+packaging/build/
+packaging/dist/
+.upstream-extract/
+.upstream-*.zip
+.python-3.13.14-arm64.exe
+.python-install*.log
+HDRShot-*.zip
+HDRShot-*.sha256
+.pytest_cache/
+.ruff_cache/
 
 # OS / editor
 .DS_Store

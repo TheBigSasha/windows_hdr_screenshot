@@ -23,19 +23,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..config import CANONICAL_FORMATS, validate_format
 from ..core import color, pipeline
 from .workers import EncodeWorker
 
 # (id, label, description)
 FORMAT_ITEMS = [
     ("auto", "Auto", "best format for the content"),
-    ("ultrahdr", "UltraHDR JPEG", "SDR JPEG + gain map · opens everywhere, HDR on capable viewers"),
+    ("uhdr-jpeg", "UltraHDR JPEG", "SDR JPEG + gain map · HDR on compatible viewers"),
+    ("uhdr-avif", "UltraHDR AVIF", "gain-map AVIF · needs the libultrahdr provider"),
+    ("uhdr-heic", "UltraHDR HEIC", "gain-map HEIC · needs the libultrahdr provider"),
+    ("pq-avif", "AVIF (PQ)", "single-rendition 10-bit BT.2020 PQ · needs [avif-hdr]"),
+    ("pq-heic", "HEIC (PQ)", "single-rendition 10-bit BT.2020 PQ · needs [heic]"),
     ("exr", "OpenEXR", "lossless linear scRGB · editing / archival"),
-    ("heic", "HEIC (PQ)", "10-bit BT.2020 PQ · needs the [heic] extra"),
     ("png", "PNG", "lossless 8-bit SDR"),
     ("jpeg", "JPEG", "8-bit SDR"),
-    ("avif", "AVIF", "10-bit PQ with [avif-hdr], else 8-bit SDR"),
+    ("avif-sdr", "AVIF (SDR)", "8-bit SDR · needs the [avif-sdr] extra"),
 ]
+
+assert tuple(item[0] for item in FORMAT_ITEMS) == CANONICAL_FORMATS
 
 
 def _qimage_from_rgb(arr: np.ndarray) -> QImage:
@@ -105,7 +111,6 @@ class PreviewWindow(QWidget):
         self.hint.setObjectName("subtle")
         fr.addWidget(self.hint, 1)
         root.addLayout(fr)
-        self._update_hint()
         self.combo.currentIndexChanged.connect(self._update_hint)
 
         line = QFrame()
@@ -130,31 +135,43 @@ class PreviewWindow(QWidget):
         for b in (self.copy_btn, self.open_btn, self.save_btn):
             br.addWidget(b)
         root.addLayout(br)
+        self._update_hint()
 
     def _populate_formats(self):
-        from ..encoders import heic
-        is_hdr = self.result.hdr_capable_content
-        heic_ok = heic.available()
-        default = (self.config.default_format() if self.config else "auto")
         for fid, label, _ in FORMAT_ITEMS:
             self.combo.addItem(label, fid)
-            if fid == "heic" and not heic_ok:
+            checked = validate_format(fid, allow_legacy=False)
+            if not checked.available:
                 idx = self.combo.count() - 1
                 self.combo.model().item(idx).setEnabled(False)
-                self.combo.setItemData(idx, "install hdrshot[heic] to enable", Qt.ToolTipRole)
-        # Select the configured default, else UltraHDR for HDR / PNG for SDR.
-        want = default if default != "auto" else ("ultrahdr" if is_hdr else "png")
-        for i in range(self.combo.count()):
-            if self.combo.itemData(i) == want and self.combo.model().item(i).isEnabled():
-                self.combo.setCurrentIndex(i)
-                break
+                self.combo.setItemData(idx, checked.message(), Qt.ToolTipRole)
+        saved = (self.config.format_validation()
+                 if self.config else validate_format("auto"))
+        if saved.valid and saved.canonical:
+            for i in range(self.combo.count()):
+                if self.combo.itemData(i) == saved.canonical:
+                    # Keep an unavailable explicit saved profile selected and
+                    # visible. Never fall through to Auto or the first item.
+                    self.combo.setCurrentIndex(i)
+                    return
+        if saved.value is not None:
+            self.combo.addItem(f"Invalid saved value: {saved.value}", saved.value)
+            idx = self.combo.count() - 1
+            self.combo.model().item(idx).setEnabled(False)
+            self.combo.setItemData(idx, saved.message(), Qt.ToolTipRole)
+            self.combo.setCurrentIndex(idx)
 
     def _update_hint(self):
         fid = self.combo.currentData()
+        checked = validate_format(fid, allow_legacy=False)
         for k, _, desc in FORMAT_ITEMS:
             if k == fid:
-                self.hint.setText(desc)
+                self.hint.setText(desc if checked.selectable else checked.message())
                 break
+        else:
+            self.hint.setText(checked.message())
+        if hasattr(self, "save_btn"):
+            self.save_btn.setEnabled(checked.selectable)
 
     # -- actions ----------------------------------------------------------- #
     def _set_saving(self, saving: bool):
@@ -165,9 +182,14 @@ class PreviewWindow(QWidget):
             self.status.setText("Saving…")
         else:
             self.unsetCursor()
+            self._update_hint()
 
     def _save(self):
         fid = self.combo.currentData()
+        checked = validate_format(fid, allow_legacy=False)
+        if not checked.selectable:
+            self.status.setText(checked.message())
+            return
         self._set_saving(True)
         gq = self.config.get("gainmap_quality") if self.config else None
         gd = self.config.get("gainmap_downscale") if self.config else None

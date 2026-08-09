@@ -16,12 +16,15 @@ import argparse
 import json
 import logging
 import sys
+from collections.abc import Mapping
+from typing import Any
 
 from . import __version__
 from .core import pipeline
 from .core.types import virtual_desktop_bounds
 
-FORMATS = ["auto", "ultrahdr", "exr", "heic", "png", "jpeg", "avif"]
+# Keep canonical issue #31 profiles first while accepting every legacy alias.
+FORMATS = list(pipeline.PUBLIC_FORMATS)
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -65,7 +68,7 @@ def cmd_info(args) -> int:
     return 0
 
 
-def _report(info: dict) -> None:
+def _report(info: Mapping[str, Any]) -> None:
     extra = ""
     if "gainmap_max_stops" in info:
         extra = f"  gain map: {info['gainmap_max_stops']} stops"
@@ -112,6 +115,11 @@ def cmd_region(args) -> int:
 def cmd_selftest(args) -> int:
     from .selftest import run_selftest
     return run_selftest(args.out)
+
+
+def cmd_capabilities(args) -> int:
+    print(json.dumps(pipeline.capabilities_payload(), indent=2))
+    return 0
 
 
 def cmd_parse(args) -> int:
@@ -188,6 +196,9 @@ def build_parser() -> argparse.ArgumentParser:
     ps = sub.add_parser("selftest", help="synthesise HDR and write every format")
     ps.add_argument("--out", default=None)
 
+    pcap = sub.add_parser("capabilities", help="report exact runtime codec profiles as JSON")
+    pcap.add_argument("--json", action="store_true", default=True, help="(always on)")
+
     return p
 
 
@@ -196,7 +207,7 @@ def main(argv=None) -> int:
     _setup_logging(getattr(args, "verbose", False))
     handlers = {"info": cmd_info, "full": cmd_full, "region": cmd_region,
                 "capture": cmd_capture, "parse": cmd_parse, "check": cmd_check,
-                "selftest": cmd_selftest, None: cmd_gui}
+                "selftest": cmd_selftest, "capabilities": cmd_capabilities, None: cmd_gui}
     try:
         return handlers[args.cmd](args)
     except (KeyboardInterrupt, SystemExit):
@@ -207,8 +218,28 @@ def main(argv=None) -> int:
         logging.getLogger(__name__).debug("command failed", exc_info=True)
         msg = f"{type(e).__name__}: {e}"
         if getattr(args, "json", False):
-            print(json.dumps({"error": {"type": type(e).__name__, "message": str(e)}},
-                             indent=2))
+            error: dict[str, Any] = {"type": type(e).__name__, "message": str(e)}
+            capability = getattr(e, "capability", None)
+            if capability is not None:
+                error.update({
+                    "profile": capability.profile,
+                    "status": capability.status,
+                    "reason": capability.reason,
+                    "provider": capability.provider,
+                    "provider_version": capability.provider_version,
+                })
+            elif isinstance(e, pipeline.CodecEncodeError):
+                error.update({
+                    "profile": e.actual_profile,
+                    "status": e.status,
+                    "reason": e.reason,
+                    "provider": e.provider,
+                    "provider_version": e.provider_version,
+                })
+            else:
+                error.update({"status": None, "reason": None, "provider": None,
+                              "provider_version": None})
+            print(json.dumps({"error": error}, indent=2))
         else:
             print(f"error: {msg}", file=sys.stderr)
         return 3

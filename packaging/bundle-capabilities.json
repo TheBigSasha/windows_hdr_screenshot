@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "architecture": "x64",
+  "expected_profiles": ["uhdr-jpeg", "png", "jpeg"]
+}

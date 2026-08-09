@@ -6,11 +6,37 @@ mapping, no gamut clipping, no quantisation beyond the fp16 the GPU gave us.
 """
 from __future__ import annotations
 
+import importlib.metadata
+
 import numpy as np
-import OpenEXR
+
+
+def available() -> bool:
+    """Return whether the optional OpenEXR binding is installed."""
+    from ..codecs import capability
+    return capability("exr").available
+
+
+def provider_details(profile: str | None = None) -> tuple[str, str | None]:
+    try:
+        import OpenEXR  # pyright: ignore[reportMissingImports]
+        version = getattr(OpenEXR, "__version__", None)
+    except Exception:  # pragma: no cover - optional dependency
+        version = None
+    if version is None:
+        try:
+            version = importlib.metadata.version("OpenEXR")
+        except importlib.metadata.PackageNotFoundError:
+            version = None
+    return "OpenEXR", str(version) if version else None
 
 
 def write_exr(path: str, linear: np.ndarray, sdr_white_nits: float = 80.0) -> None:
+    try:
+        import OpenEXR  # pyright: ignore[reportMissingImports]
+    except Exception as e:
+        raise RuntimeError(
+            'EXR output needs the optional "exr" extra: pip install "hdrshot[exr]"') from e
     rgb = np.ascontiguousarray(linear[..., :3], dtype=np.float16)
     # Each channel MUST be its own contiguous array: the OpenEXR binding reads the
     # underlying buffer linearly and silently scrambles strided views like

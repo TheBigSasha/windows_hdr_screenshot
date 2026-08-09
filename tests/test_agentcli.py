@@ -9,6 +9,9 @@ import pytest
 from hdrshot import agentcli
 from hdrshot.core import color, pipeline
 from hdrshot.core.types import DisplayInfo
+from hdrshot.encoders import exr
+
+EXR_SKIP_REASON = "OpenEXR optional extra is not installed on this architecture"
 
 
 def _write(tmp_path, fmt, scene):
@@ -25,12 +28,13 @@ def _write(tmp_path, fmt, scene):
 def test_parse_ultrahdr(tmp_path, hdr_scene):
     p = _write(tmp_path, "ultrahdr", hdr_scene)
     meta = agentcli.parse_file(p)
-    assert meta["format"] == "ultrahdr"
+    assert meta["format"] == "uhdr-jpeg"
     assert meta["is_hdr"] is True
     assert meta["gainmap_max_stops"] > 0
     assert meta["container"]["mpf"] is True
 
 
+@pytest.mark.skipif(not exr.available(), reason=EXR_SKIP_REASON)
 def test_parse_exr(tmp_path, hdr_scene):
     p = _write(tmp_path, "exr", hdr_scene)
     meta = agentcli.parse_file(p)
@@ -54,12 +58,13 @@ def test_parse_missing_file_raises():
 def test_detect_format(tmp_path, hdr_scene, sdr_scene):
     uhdr = _write(tmp_path, "ultrahdr", hdr_scene)
     with open(uhdr, "rb") as f:
-        assert agentcli._detect_format(uhdr, f.read(4096)) == "ultrahdr"
+        assert agentcli._detect_format(uhdr, f.read(4096)) == "uhdr-jpeg"
     plain = _write(tmp_path, "jpeg", sdr_scene)
     with open(plain, "rb") as f:
         assert agentcli._detect_format(plain, f.read(4096)) == "jpeg"
 
 
+@pytest.mark.skipif(not exr.available(), reason=EXR_SKIP_REASON)
 def test_check_hdr_passes(tmp_path, hdr_scene, capsys):
     p = _write(tmp_path, "exr", hdr_scene)
     args = argparse.Namespace(file=p, min_nits=None, min_stops=None, json=False)
@@ -72,6 +77,7 @@ def test_check_sdr_fails(tmp_path, sdr_scene):
     assert agentcli.cmd_check(args) == 1
 
 
+@pytest.mark.skipif(not exr.available(), reason=EXR_SKIP_REASON)
 def test_check_min_nits_threshold(tmp_path, hdr_scene):
     p = _write(tmp_path, "exr", hdr_scene)
     # scene peaks ~1600 nits; requiring 3000 must fail.
@@ -81,6 +87,7 @@ def test_check_min_nits_threshold(tmp_path, hdr_scene):
     assert agentcli.cmd_check(args_ok) == 0
 
 
+@pytest.mark.skipif(not exr.available(), reason=EXR_SKIP_REASON)
 def test_check_json_shape(tmp_path, hdr_scene, capsys):
     p = _write(tmp_path, "exr", hdr_scene)
     args = argparse.Namespace(file=p, min_nits=None, min_stops=None, json=True)
@@ -95,11 +102,11 @@ def test_captures_to_json_shape(hdr_scene):
     res = pipeline.CaptureResult(linear=hdr_scene, sdr_white_nits=480.0, display=disp,
                                  region_phys=(0, 0, 320, 200),
                                  stats=color.hdr_stats(hdr_scene, 480.0))
-    info = {"format": "ultrahdr", "path": "x.jpg", "hdr": True, "gainmap_max_stops": 2.5}
+    info = {"format": "uhdr-jpeg", "path": "x.jpg", "hdr": True, "gainmap_max_stops": 2.5}
     payload = json.loads(agentcli.captures_to_json([(disp, res, info)]))
     assert "captures" in payload and len(payload["captures"]) == 1
     c = payload["captures"][0]
-    assert c["format"] == "ultrahdr"
+    assert c["format"] == "uhdr-jpeg"
     assert c["display"]["gdi_name"] == "A"
     assert "notes" in payload
 

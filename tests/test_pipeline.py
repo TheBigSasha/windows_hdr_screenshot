@@ -6,6 +6,7 @@ import pytest
 
 from hdrshot.core import pipeline
 from hdrshot.core.types import DisplayInfo, MonitorCapture
+from hdrshot.encoders import exr
 
 
 def _display(gdi, x, y, w, h, primary=False, hdr=True, white=80.0):
@@ -107,7 +108,7 @@ def _result(fill, white=80.0, hdr_enabled=True):
 
 
 def test_choose_auto_format():
-    assert pipeline.choose_auto_format(_result(8.0)) == "ultrahdr"   # HDR
+    assert pipeline.choose_auto_format(_result(8.0)) == "uhdr-jpeg"   # HDR
     assert pipeline.choose_auto_format(_result(0.5)) == "png"        # SDR
 
 
@@ -140,6 +141,7 @@ def test_save_writes_unique_files(tmp_path):
     assert a["path"] != b["path"]
 
 
+@pytest.mark.skipif(not exr.available(), reason="OpenEXR optional extra is not installed on this architecture")
 def test_encode_hdr_flag(tmp_path):
     r = _result(8.0)
     info = pipeline.encode(r, "exr", str(tmp_path / "x.exr"))

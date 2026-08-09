@@ -18,6 +18,7 @@ def _read_exr_rgb(path) -> np.ndarray:
     return np.stack([np.asarray(part.channels[c].pixels, np.float32) for c in "RGB"], axis=-1)
 
 
+@pytest.mark.skipif(not exr.available(), reason="OpenEXR optional extra is not installed on this architecture")
 def test_exr_roundtrip_is_pixel_exact(tmp_path, hdr_scene):
     """Every pixel must survive, not just the global max — a writer that scrambles
     pixel order (regression: strided channel views handed to OpenEXR) can pass a
@@ -30,6 +31,7 @@ def test_exr_roundtrip_is_pixel_exact(tmp_path, hdr_scene):
     assert np.array_equal(back, expect)
 
 
+@pytest.mark.skipif(not exr.available(), reason="OpenEXR optional extra is not installed on this architecture")
 def test_exr_gradient_every_pixel(tmp_path):
     """Positionally-unique gradient: catches any reordering/truncation exactly."""
     h, w = 60, 40
@@ -40,6 +42,7 @@ def test_exr_gradient_every_pixel(tmp_path):
     assert np.array_equal(back, img.astype(np.float16).astype(np.float32))
 
 
+@pytest.mark.skipif(not exr.available(), reason="OpenEXR optional extra is not installed on this architecture")
 def test_exr_writes_alpha_when_present(tmp_path):
     rgba = np.dstack([np.full((8, 8, 3), 2.0, np.float32), np.full((8, 8), 0.5, np.float32)])
     path = tmp_path / "b.exr"

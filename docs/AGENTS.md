@@ -22,8 +22,8 @@ numbers, so an agent can decide deterministically.
 ```bash
 # Not on PyPI yet — install from GitHub (or a checkout: pip install .[extra]):
 pip install "hdrshot @ git+https://github.com/TheBigSasha/windows_hdr_screenshot"
-pip install "hdrshot[avif-hdr] @ git+https://github.com/TheBigSasha/windows_hdr_screenshot"   # + true 10-bit PQ HDR AVIF
-pip install "hdrshot[heic] @ git+https://github.com/TheBigSasha/windows_hdr_screenshot"       # + 10-bit PQ HEIC (x265/GPL; see notes)
+pip install "hdrshot[avif-hdr] @ git+https://github.com/TheBigSasha/windows_hdr_screenshot"   # + single-rendition PQ AVIF
+pip install "hdrshot[heic] @ git+https://github.com/TheBigSasha/windows_hdr_screenshot"       # + single-rendition PQ HEIC (x265/GPL; see notes)
 ```
 Or use the standalone release zip: run `HDRShot\hdrshot-cli.exe` — the console
 build with real stdout/exit codes (the windowed `HDRShot.exe` has neither).
@@ -58,7 +58,7 @@ prints JSON. Always JSON.
   "captures": [
     {
       "path": "…/HDR Screenshot 2026-07-03 153045.jpg",
-      "format": "ultrahdr", "width": 1200, "height": 800,
+      "format": "uhdr-jpeg", "width": 1200, "height": 800,
       "encoded_hdr": true,      // written in an HDR format AND content is HDR
       "hdr_content": true,      // pixels carry values above SDR white
       "is_hdr_live": true,      // hdr_content AND the source display has HDR on
@@ -86,12 +86,12 @@ Fields vary by format:
 { "format": "exr", "is_hdr": true, "max_linear": 20.0, "peak_nits": 1600.0,
   "headroom_stops": 4.32, "channels": ["RGB"] }
 // UltraHDR (relative gain map)
-{ "format": "ultrahdr", "is_hdr": true, "gainmap_min_stops": 0.0,
+{ "format": "uhdr-jpeg", "is_hdr": true, "gainmap_min_stops": 0.0,
   "gainmap_max_stops": 4.30, "gamma": 1.0, "peak_ratio_over_sdr_white": 19.7,
   "apple_compatible": true,
   "container": { "mpf": true, "hdrgm_xmp": true, "iso_21496_1": true } }
 // HEIC / AVIF (nclx)
-{ "format": "heic", "is_hdr": true, "bit_depth": 10,
+{ "format": "pq-heic", "is_hdr": true, "bit_depth": 10,
   "transfer_characteristics": 16, "transfer_name": "PQ (SMPTE ST 2084)",
   "color_primaries": 9, "primaries_name": "BT.2020" }
 ```
@@ -149,7 +149,7 @@ caps  = backend.capture_all()                    # {gdi_name: MonitorCapture}
 disps = backend.enumerate_displays()
 
 res  = pipeline.capture_region((100, 100, 1200, 800), caps, disps)
-info = pipeline.save(res, "ultrahdr", out_dir="./shots")
+info = pipeline.save(res, "uhdr-jpeg", out_dir="./shots")
 print(res.stats["peak_nits"], res.hdr_capable_content)
 
 # Parse / verify without capturing:
@@ -168,9 +168,24 @@ hdrshot info --json | jq -e '.any_hdr_enabled' >/dev/null || { echo "HDR is off"
 
 # Capture, then assert the result is real HDR before trusting it
 # (parse/check take exactly one file — read the path from the capture JSON):
-hdrshot capture --display 0 --format ultrahdr --out ./out --preview ./out/p.png > cap.json
+hdrshot capture --display 0 --format uhdr-jpeg --out ./out --preview ./out/p.png > cap.json
 hdrshot check "$(jq -r '.captures[0].path' cap.json)" --min-stops 1 || echo "capture came back SDR"
 
 # Deterministic HDR/SDR branch by exit code:
 if hdrshot check "$IMG" >/dev/null; then echo HDR; else echo SDR; fi
 ```
+
+## Codec capability contract
+
+Use `hdrshot capabilities --json` before selecting an explicit output profile.
+The response has one entry for each canonical profile: `uhdr-jpeg`, `exr`,
+`pq-heic`, `png`, `jpeg`, `avif-sdr`, and `pq-avif`. Each entry includes `available`, `status`, `reason`,
+`hdr_representation`, `provider`, and `provider_version`. `status` is one of
+`available`, `missing`, `broken`, or `excluded`.
+
+Legacy `ultrahdr`, `heic`, and `avif` aliases retain their historical meanings:
+`uhdr-jpeg`, `pq-heic`, and `pq-avif`. An unavailable explicit profile is an
+error. The pipeline never silently changes an HDR request to an SDR
+representation. Capture JSON records the original `requested_format`, canonical
+`requested_profile`, `actual_profile`, provider, provider version, and encoded
+representation so an agent can verify the artifact contract.
