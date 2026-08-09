@@ -47,7 +47,11 @@ def write_avif_pq(path: str, linear: np.ndarray, quality: int = 90) -> dict:
         np.ascontiguousarray(pq10),
         level=max(0, min(100, quality)),
         bitspersample=10,
-        pixelformat="yuv444",
+        # imagecodecs/libavif sets the full-range flag for subsampled YUV
+        # formats, while its YUV444 path leaves the image at limited range.
+        # The PQ10 buffer is full-range, so use YUV420 and verify the emitted
+        # CICP/NCLX contract below rather than silently writing mismatched HDR.
+        pixelformat="yuv420",
         primaries=CP_BT2020,
         transfer=TC_PQ,
         matrix=MC_BT2020_NCL,
