@@ -15,7 +15,6 @@ import uuid
 import zipfile
 from pathlib import Path
 
-
 _ARCHIVE_RE = re.compile(r"^HDRShot-(\d+\.\d+\.\d+)-(win64|win-arm64)\.zip$")
 
 
