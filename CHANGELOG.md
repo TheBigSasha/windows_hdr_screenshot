@@ -6,6 +6,14 @@ All notable changes to HDR Shot are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-09
+
+### Fixed
+- The Windows installer is now windowed, so installation does not flash a terminal.
+- Per-user Start Menu registration now uses the indexed Programs path and is
+  verified to target the installed GUI on native x64 and ARM64 runners.
+
+
 ## [0.3.0] - 2026-08-08
 
 ### Added
