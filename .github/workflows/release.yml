@@ -254,15 +254,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $listedJson = gh release list --limit 100 --json tagName,isDraft,databaseId
-          if ($LASTEXITCODE -ne 0) { throw "could not list releases for $tag" }
-          $listed = @($listedJson | ConvertFrom-Json)
-          $existing = @($listed | Where-Object { $_.tagName -ceq $tag })
-          if ($existing.Count -gt 1) { throw "multiple releases exist for $tag" }
-          if ($existing.Count -eq 1) {
-            $candidate = $existing[0]
+          $existingJson = gh release view $tag --json tagName,isDraft,databaseId 2>$null
+          $viewExit = $LASTEXITCODE
+          if ($viewExit -eq 0) {
+            $candidate = $existingJson | ConvertFrom-Json
             if (-not [bool]$candidate.isDraft) { throw "release $tag is already published" }
-            gh api --method DELETE "repos/$env:GITHUB_REPOSITORY/releases/$($candidate.databaseId)"
+            gh release delete $tag --yes
             if ($LASTEXITCODE -ne 0) { throw "could not remove stale draft release $tag" }
           }
 
@@ -328,13 +325,11 @@ jobs:
           $version = $tag.Substring(1)
           $dir = Join-Path $PWD draft-verification
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
-          $listedJson = gh release list --limit 100 --json tagName,isDraft,databaseId
-          if ($LASTEXITCODE -ne 0) { throw "could not list releases for $tag" }
-          $listed = @($listedJson | ConvertFrom-Json)
-          $matches = @($listed | Where-Object { $_.tagName -ceq $tag })
-          if ($matches.Count -ne 1) { throw "draft release $tag was not found in gh release list" }
-          if (-not [bool]$matches[0].isDraft) { throw "release $tag is not a draft" }
-          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/$($matches[0].databaseId)"
+          $releaseJson = gh release view $tag --json tagName,isDraft,databaseId
+          if ($LASTEXITCODE -ne 0) { throw "draft release $tag was not found" }
+          $releaseInfo = $releaseJson | ConvertFrom-Json
+          if (-not [bool]$releaseInfo.isDraft) { throw "release $tag is not a draft" }
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/$($releaseInfo.databaseId)"
           if ($LASTEXITCODE -ne 0) { throw "could not fetch draft release $tag by ID" }
           $release = $releaseJson | ConvertFrom-Json
 
@@ -368,14 +363,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $listedJson = gh release list --limit 100 --json tagName,isDraft,databaseId
-          if ($LASTEXITCODE -ne 0) { throw "could not list releases for $tag" }
-          $listed = @($listedJson | ConvertFrom-Json)
-          $matches = @($listed | Where-Object { $_.tagName -ceq $tag })
-          if ($matches.Count -ne 1) { throw "draft release $tag was not found in gh release list" }
-          if (-not [bool]$matches[0].isDraft) { throw "release $tag is already public" }
-          $release = $matches[0]
-          gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)" -F draft=false
+          $releaseJson = gh release view $tag --json tagName,isDraft,databaseId
+          if ($LASTEXITCODE -ne 0) { throw "draft release $tag was not found" }
+          $releaseInfo = $releaseJson | ConvertFrom-Json
+          if (-not [bool]$releaseInfo.isDraft) { throw "release $tag is already public" }
+          gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$($releaseInfo.databaseId)" -F draft=false
           if ($LASTEXITCODE -ne 0) { throw "could not publish release $tag" }
 
       - name: Re-download and verify public release hashes
