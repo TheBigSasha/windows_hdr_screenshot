@@ -66,7 +66,7 @@ def _verify_avif(path: str, hdr: bool) -> str:
     if hdr:
         meta = avif_hdr.probe(path)
         expected = {"color_primaries": 9, "transfer_characteristics": 16,
-                    "matrix_coefficients": 9, "full_range_flag": 1}
+                    "matrix_coefficients": 9, "full_range_flag": 0}
         if (not meta or meta.get("bit_depth") != 10 or
                 any(meta.get(k) != v for k, v in expected.items())):
             raise ValueError(f"AVIF is not a complete 10-bit BT.2020 PQ image: {meta}")
