@@ -190,7 +190,106 @@ jobs:
         run: |
           $archives = @(Get-ChildItem metadata-input -Recurse -File -Filter 'HDRShot-*.zip')
           if ($archives.Count -ne 2) { throw "expected two architecture archives, found $($archives.Count)" }
-          $version = ([regex]::Match($archives[0].Name, '^HDRShot-(.+)-win(?:64|arm64)\.zip$')).Groups[1].Value
+          $version = [IO.Path]::GetFileNameWithoutExtension($archives[0].Name)
+          $version = $version -replace '^HDRShot-', ''
+          $version = $version -replace '-win-arm64
+          $x64 = $archives | Where-Object Name -eq "HDRShot-$version-win64.zip"
+          $arm = $archives | Where-Object Name -eq "HDRShot-$version-win-arm64.zip"
+          if (-not $x64 -or -not $arm) { throw 'both exact architecture archives are required' }
+          $sbomDir = Join-Path $PWD metadata-sboms
+          New-Item -ItemType Directory -Path $sbomDir -Force | Out-Null
+          foreach ($archive in @($x64, $arm)) {
+            $extract = Join-Path $sbomDir ([IO.Path]::GetFileNameWithoutExtension($archive.Name))
+            Expand-Archive -LiteralPath $archive.FullName -DestinationPath $extract
+            $sbom = Join-Path $sbomDir ($archive.Name + '.sbom.spdx.json')
+            python packaging/generate_sbom.py --bundle (Join-Path $extract 'HDRShot') --out $sbom --validate
+          }
+          $urlBase = "https://github.com/TheBigSasha/windows_hdr_screenshot/actions/runs/$env:GITHUB_RUN_ID/artifacts"
+          python packaging/generate_winget.py --version $version `
+            --x64-url "$urlBase/bundle-x64" --arm64-url "$urlBase/bundle-arm64" `
+            --x64-archive $x64.FullName --arm64-archive $arm.FullName `
+            --out-dir metadata-winget --validate
+
+  # Provider lanes are intentionally separate from the minimal/frozen absence
+  # lanes above. Each lane installs one exact optional extra and then runs its
+  # complete round-trip tests; a broken import cannot become a green skip.
+  windows-optional-providers:
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - extra: exr
+            tests: tests/test_encoders.py tests/test_agentcli.py
+          - extra: avif-sdr
+            tests: tests/test_encoders.py -k avif_sdr
+          - extra: avif-hdr
+            tests: tests/test_avif_hdr.py tests/test_followup_review.py -k 'avif or cicp'
+          - extra: heic
+            tests: tests/test_followup_review.py -k heic
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v5
+        with:
+          python-version: "3.12"
+      - name: Install provider lane
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -e ".[${{ matrix.extra }}]" pytest
+          python -c "from hdrshot.codecs import capability; c = capability('${{ matrix.extra == 'avif-hdr' && 'pq-avif' || matrix.extra }}'); assert c.available, c"
+      - name: Run provider round-trip tests
+        shell: pwsh
+        run: python -m pytest -q ${{ matrix.tests }}
+, ''
+          $version = $version -replace '-win64
+          $x64 = $archives | Where-Object Name -eq "HDRShot-$version-win64.zip"
+          $arm = $archives | Where-Object Name -eq "HDRShot-$version-win-arm64.zip"
+          if (-not $x64 -or -not $arm) { throw 'both exact architecture archives are required' }
+          $sbomDir = Join-Path $PWD metadata-sboms
+          New-Item -ItemType Directory -Path $sbomDir -Force | Out-Null
+          foreach ($archive in @($x64, $arm)) {
+            $extract = Join-Path $sbomDir ([IO.Path]::GetFileNameWithoutExtension($archive.Name))
+            Expand-Archive -LiteralPath $archive.FullName -DestinationPath $extract
+            $sbom = Join-Path $sbomDir ($archive.Name + '.sbom.spdx.json')
+            python packaging/generate_sbom.py --bundle (Join-Path $extract 'HDRShot') --out $sbom --validate
+          }
+          $urlBase = "https://github.com/TheBigSasha/windows_hdr_screenshot/actions/runs/$env:GITHUB_RUN_ID/artifacts"
+          python packaging/generate_winget.py --version $version `
+            --x64-url "$urlBase/bundle-x64" --arm64-url "$urlBase/bundle-arm64" `
+            --x64-archive $x64.FullName --arm64-archive $arm.FullName `
+            --out-dir metadata-winget --validate
+
+  # Provider lanes are intentionally separate from the minimal/frozen absence
+  # lanes above. Each lane installs one exact optional extra and then runs its
+  # complete round-trip tests; a broken import cannot become a green skip.
+  windows-optional-providers:
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - extra: exr
+            tests: tests/test_encoders.py tests/test_agentcli.py
+          - extra: avif-sdr
+            tests: tests/test_encoders.py -k avif_sdr
+          - extra: avif-hdr
+            tests: tests/test_avif_hdr.py tests/test_followup_review.py -k 'avif or cicp'
+          - extra: heic
+            tests: tests/test_followup_review.py -k heic
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v5
+        with:
+          python-version: "3.12"
+      - name: Install provider lane
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -e ".[${{ matrix.extra }}]" pytest
+          python -c "from hdrshot.codecs import capability; c = capability('${{ matrix.extra == 'avif-hdr' && 'pq-avif' || matrix.extra }}'); assert c.available, c"
+      - name: Run provider round-trip tests
+        shell: pwsh
+        run: python -m pytest -q ${{ matrix.tests }}
+, ''
           if (-not $version) { throw 'could not derive package version' }
           $x64 = $archives | Where-Object Name -eq "HDRShot-$version-win64.zip"
           $arm = $archives | Where-Object Name -eq "HDRShot-$version-win-arm64.zip"
