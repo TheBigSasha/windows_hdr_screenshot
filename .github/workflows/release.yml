@@ -253,11 +253,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $existingJson = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == '$tag')"
-          if ($LASTEXITCODE -eq 0 -and $existingJson) {
-            $existing = $existingJson | ConvertFrom-Json
-            if (-not [bool]$existing.draft) { throw "release $tag is already published" }
-            gh api --method DELETE "repos/$env:GITHUB_REPOSITORY/releases/$($existing.id)"
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100"
+          if ($LASTEXITCODE -ne 0) { throw "could not list releases for $tag" }
+          $releases = @($releaseJson | ConvertFrom-Json)
+          $existing = @($releases | Where-Object { $_.tag_name -ceq $tag })
+          if ($existing.Count -gt 1) { throw "multiple releases exist for $tag" }
+          if ($existing.Count -eq 1) {
+            $candidate = $existing[0]
+            if (-not [bool]$candidate.draft) { throw "release $tag is already published" }
+            gh api --method DELETE "repos/$env:GITHUB_REPOSITORY/releases/$($candidate.id)"
             if ($LASTEXITCODE -ne 0) { throw "could not remove stale draft release $tag" }
           }
 
@@ -323,9 +327,12 @@ jobs:
           $version = $tag.Substring(1)
           $dir = Join-Path $PWD draft-verification
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
-          $releaseJson = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == '$tag')"
-          if ($LASTEXITCODE -ne 0 -or -not $releaseJson) { throw "draft release $tag was not found through the authenticated release list" }
-          $release = $releaseJson | ConvertFrom-Json
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100"
+          if ($LASTEXITCODE -ne 0) { throw "could not list releases for $tag" }
+          $releases = @($releaseJson | ConvertFrom-Json)
+          $matches = @($releases | Where-Object { $_.tag_name -ceq $tag })
+          if ($matches.Count -ne 1) { throw "draft release $tag was not found through the authenticated release list" }
+          $release = $matches[0]
           if (-not [bool]$release.draft) { throw "release $tag is not a draft" }
 
           function Download-Asset([string] $Name) {
@@ -358,9 +365,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $releaseJson = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == '$tag')"
-          if ($LASTEXITCODE -ne 0 -or -not $releaseJson) { throw "draft release $tag was not found" }
-          $release = $releaseJson | ConvertFrom-Json
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100"
+          if ($LASTEXITCODE -ne 0) { throw "could not list releases for $tag" }
+          $releases = @($releaseJson | ConvertFrom-Json)
+          $matches = @($releases | Where-Object { $_.tag_name -ceq $tag })
+          if ($matches.Count -ne 1) { throw "draft release $tag was not found" }
+          $release = $matches[0]
           if (-not [bool]$release.draft) { throw "release $tag is already public" }
           gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)" -F draft=false
           if ($LASTEXITCODE -ne 0) { throw "could not publish release $tag" }
