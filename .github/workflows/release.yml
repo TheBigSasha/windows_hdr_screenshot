@@ -295,8 +295,9 @@ jobs:
   verify-draft:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: publish-draft
+    # GitHub only exposes draft releases to push-authorized tokens.
     permissions:
-      contents: read
+      contents: write
     strategy:
       fail-fast: false
       matrix:
