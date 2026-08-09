@@ -99,6 +99,14 @@ jobs:
           "$hash  $name.zip" | Set-Content -Encoding ascii (Join-Path $releaseDir "$name.zip.sha256")
           & packaging/dist/HDRShot/hdrshot-cli.exe --version
           if ($LASTEXITCODE -ne 0) { throw 'CLI version smoke test failed' }
+          $installerBase = "HDRShot-$version-${{ matrix.asset_suffix }}-setup"
+          Remove-Item -LiteralPath release-installer, installer-work, installer-spec -Recurse -Force -ErrorAction SilentlyContinue
+          python -m PyInstaller --onefile --noconfirm --clean --name $installerBase --distpath release-installer --workpath installer-work --specpath installer-spec --add-data "$zip;payload" --add-data "$($zip).sha256;payload" packaging/installer.py
+          $installer = Join-Path $releaseDir "$installerBase.exe"
+          Copy-Item "release-installer/$installerBase.exe" $installer
+          $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$installerHash  $installerBase.exe" | Set-Content -Encoding ascii "$installer.sha256"
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "missing installer $installer" }
 
       - name: Generate dependency SBOM
         shell: pwsh
@@ -126,6 +134,8 @@ jobs:
           path: |
             release-artifacts/HDRShot-*.zip
             release-artifacts/HDRShot-*.zip.sha256
+            release-artifacts/HDRShot-*-setup.exe
+            release-artifacts/HDRShot-*-setup.exe.sha256
             release-artifacts/HDRShot-*.sbom.spdx.json
           if-no-files-found: error
           retention-days: 14
@@ -205,6 +215,11 @@ jobs:
               $arm[0].Name -cne "HDRShot-$version-win-arm64.zip") {
             throw "archive names do not exactly match tag version $version"
           }
+          $x64Setup = @(Get-ChildItem release-assets -Recurse -File -Filter "HDRShot-$version-win64-setup.exe")
+          $armSetup = @(Get-ChildItem release-assets -Recurse -File -Filter "HDRShot-$version-win-arm64-setup.exe")
+          if ($x64Setup.Count -ne 1 -or $armSetup.Count -ne 1) {
+            throw 'exactly one native setup installer for each architecture is required'
+          }
 
       - name: Create WinGet manifests from exact archive hashes
         shell: pwsh
@@ -232,6 +247,20 @@ jobs:
         with:
           subject-path: release-assets/**/HDRShot-*.zip
 
+      - name: Remove stale draft release for retry
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $existingJson = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == '$tag')"
+          if ($LASTEXITCODE -eq 0 -and $existingJson) {
+            $existing = $existingJson | ConvertFrom-Json
+            if (-not [bool]$existing.draft) { throw "release $tag is already published" }
+            gh api --method DELETE "repos/$env:GITHUB_REPOSITORY/releases/$($existing.id)"
+            if ($LASTEXITCODE -ne 0) { throw "could not remove stale draft release $tag" }
+          }
+
       - name: Create a draft release only
         shell: pwsh
         env:
@@ -242,9 +271,11 @@ jobs:
           @"
           Standalone Windows builds of HDR Shot $version.
 
-          Assets are native x64 and ARM64 onedir bundles. They are kept in draft
-          until the uploaded bytes pass the same archive verifier used by CI.
-          Use HDRShot\\HDRShot.exe for the GUI or HDRShot\\hdrshot-cli.exe for scripts.
+          Assets include native x64 and ARM64 setup EXEs plus the underlying onedir
+          ZIP bundles. They remain draft until the uploaded bytes pass native
+          installer and archive verification.
+          Use the setup EXE for installation, or HDRShot\\HDRShot.exe for the GUI
+          and HDRShot\\hdrshot-cli.exe for scripts.
           "@ | Set-Content -Encoding utf8 release-notes.md
           gh release create $tag --draft --verify-tag --title "HDR Shot $version" --notes-file release-notes.md
 
@@ -271,15 +302,17 @@ jobs:
           - runner: windows-11-arm
             asset_arch: arm64
             asset_suffix: win-arm64
-    # The draft asset is verified on the same native runner family that built
-    # it, including the packaged Qt smoke path in verify_bundle.ps1.
+    # Draft releases are not addressable through gh release download by tag. Use
+    # the authenticated release list plus each asset API URL, then verify the
+    # exact uploaded ZIP and setup EXE on their native runner.
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Check out the verifier
+      - name: Check out the verifiers
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           sparse-checkout: |
             packaging/verify_bundle.ps1
+            packaging/verify_installer.ps1
 
       - name: Download exact uploaded draft bytes
         shell: pwsh
@@ -290,11 +323,27 @@ jobs:
           $version = $tag.Substring(1)
           $dir = Join-Path $PWD draft-verification
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $releaseJson = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == '$tag')"
+          if ($LASTEXITCODE -ne 0 -or -not $releaseJson) { throw "draft release $tag was not found through the authenticated release list" }
+          $release = $releaseJson | ConvertFrom-Json
+          if (-not [bool]$release.draft) { throw "release $tag is not a draft" }
+
+          function Download-Asset([string] $Name) {
+            $asset = @($release.assets | Where-Object { $_.name -ceq $Name })
+            if ($asset.Count -ne 1) { throw "expected exactly one draft asset named $Name" }
+            $destination = Join-Path $dir $Name
+            gh api $asset[0].url -H "Accept: application/octet-stream" --output $destination
+            if ($LASTEXITCODE -ne 0) { throw "could not download draft asset $Name" }
+          }
+
           $archiveName = "HDRShot-$version-${{ matrix.asset_suffix }}.zip"
-          gh release download $tag --dir $dir --pattern $archiveName --pattern "$archiveName.sha256"
-          $archives = @(Get-ChildItem $dir -File -Filter $archiveName)
-          if ($archives.Count -ne 1) { throw "expected one uploaded $archiveName" }
-          ./packaging/verify_bundle.ps1 -Archive $archives[0].FullName -ExpectedVersion $version -ExpectedArchitecture '${{ matrix.asset_arch }}' -OutputDirectory (Join-Path $dir "verified-${{ matrix.asset_arch }}")
+          $installerName = "HDRShot-$version-${{ matrix.asset_suffix }}-setup.exe"
+          Download-Asset $archiveName
+          Download-Asset "$archiveName.sha256"
+          Download-Asset $installerName
+          Download-Asset "$installerName.sha256"
+          ./packaging/verify_bundle.ps1 -Archive (Join-Path $dir $archiveName) -ExpectedVersion $version -ExpectedArchitecture '${{ matrix.asset_arch }}' -OutputDirectory (Join-Path $dir "verified-bundle-${{ matrix.asset_arch }}")
+          ./packaging/verify_installer.ps1 -Installer (Join-Path $dir $installerName) -ExpectedVersion $version -ExpectedArchitecture '${{ matrix.asset_arch }}' -OutputDirectory (Join-Path $dir "verified-installer-${{ matrix.asset_arch }}")
 
   publish:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -307,7 +356,14 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit $env:GITHUB_REF_NAME --draft=false
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $releaseJson = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == '$tag')"
+          if ($LASTEXITCODE -ne 0 -or -not $releaseJson) { throw "draft release $tag was not found" }
+          $release = $releaseJson | ConvertFrom-Json
+          if (-not [bool]$release.draft) { throw "release $tag is already public" }
+          gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$($release.id)" -F draft=false
+          if ($LASTEXITCODE -ne 0) { throw "could not publish release $tag" }
 
       - name: Re-download and verify public release hashes
         shell: pwsh
@@ -317,17 +373,22 @@ jobs:
           $version = $env:GITHUB_REF_NAME.Substring(1)
           $dir = Join-Path $PWD published-verification
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
-          gh release download $env:GITHUB_REF_NAME --dir $dir --pattern "HDRShot-$version-win64.zip" --pattern "HDRShot-$version-win64.zip.sha256" --pattern "HDRShot-$version-win-arm64.zip" --pattern "HDRShot-$version-win-arm64.zip.sha256"
-          $archives = @(Get-ChildItem $dir -File -Filter "HDRShot-$version-*.zip")
-          if ($archives.Count -ne 2) { throw "expected exactly two public architecture archives" }
-          foreach ($zip in $archives) {
-            $sidecar = "$($zip.FullName).sha256"
-            if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) { throw "missing public sidecar for $($zip.Name)" }
+          gh release download $env:GITHUB_REF_NAME --dir $dir --pattern "HDRShot-$version-win64.zip" --pattern "HDRShot-$version-win64.zip.sha256" --pattern "HDRShot-$version-win-arm64.zip" --pattern "HDRShot-$version-win-arm64.zip.sha256" --pattern "HDRShot-$version-win64-setup.exe" --pattern "HDRShot-$version-win64-setup.exe.sha256" --pattern "HDRShot-$version-win-arm64-setup.exe" --pattern "HDRShot-$version-win-arm64-setup.exe.sha256"
+          $files = @(
+            Get-ChildItem $dir -File -Filter "HDRShot-$version-win64.zip"
+            Get-ChildItem $dir -File -Filter "HDRShot-$version-win-arm64.zip"
+            Get-ChildItem $dir -File -Filter "HDRShot-$version-win64-setup.exe"
+            Get-ChildItem $dir -File -Filter "HDRShot-$version-win-arm64-setup.exe"
+          )
+          if ($files.Count -ne 4) { throw "expected two public ZIPs and two public setup EXEs" }
+          foreach ($file in $files) {
+            $sidecar = "$($file.FullName).sha256"
+            if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) { throw "missing public sidecar for $($file.Name)" }
             $lines = @(Get-Content -LiteralPath $sidecar | Where-Object { $_.Trim() -ne '' })
-            if ($lines.Count -ne 1) { throw "invalid public sidecar for $($zip.Name)" }
+            if ($lines.Count -ne 1) { throw "invalid public sidecar for $($file.Name)" }
             $match = [regex]::Match($lines[0].Trim(), '^(?<hash>[0-9A-Fa-f]{64})\s+\*?(?<name>\S+)$')
-            if (-not $match.Success -or $match.Groups['name'].Value -cne $zip.Name) { throw "invalid public sidecar record for $($zip.Name)" }
+            if (-not $match.Success -or $match.Groups['name'].Value -cne $file.Name) { throw "invalid public sidecar record for $($file.Name)" }
             $expected = $match.Groups['hash'].Value.ToLowerInvariant()
-            $actual = (Get-FileHash -LiteralPath $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($expected -ne $actual) { throw "public hash mismatch for $($zip.Name)" }
+            $actual = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($expected -ne $actual) { throw "public hash mismatch for $($file.Name)" }
           }
