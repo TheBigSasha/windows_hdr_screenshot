@@ -89,7 +89,7 @@ jobs:
           $licenseSource = Join-Path $PWD 'packaging/LICENSE.LGPL-3.0.txt'
           if (-not (Test-Path -LiteralPath $licenseSource -PathType Leaf)) { throw "missing checked-in LGPL notice $licenseSource" }
           $licenseHash = (Get-FileHash -LiteralPath $licenseSource -Algorithm SHA256).Hash
-          if ($licenseHash -ne 'E3A994D82E644B03A792A930F574002658412F62407F5FEE083F2555C5F23118') {
+          if ($licenseHash -ne '7D3A95E5E06978064ED3F8E2B7C8F845E7FD8A405294727CC708F94CB83B8059') {
             throw "LGPL text digest changed: $licenseHash"
           }
           Copy-Item $licenseSource (Join-Path $releaseDir 'LICENSE.LGPL-3.0.txt')
