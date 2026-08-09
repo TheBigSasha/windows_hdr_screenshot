@@ -192,8 +192,8 @@ jobs:
           if ($archives.Count -ne 2) { throw "expected two architecture archives, found $($archives.Count)" }
           $version = [IO.Path]::GetFileNameWithoutExtension($archives[0].Name)
           $version = $version -replace '^HDRShot-', ''
-          $version = $version -replace '-win-arm64
-          $x64 = $archives | Where-Object Name -eq "HDRShot-$version-win64.zip"
+          $version = $version -replace '-win-arm64$', ''
+          $version = $version -replace '-win64$', ''
           $arm = $archives | Where-Object Name -eq "HDRShot-$version-win-arm64.zip"
           if (-not $x64 -or -not $arm) { throw 'both exact architecture archives are required' }
           $sbomDir = Join-Path $PWD metadata-sboms
