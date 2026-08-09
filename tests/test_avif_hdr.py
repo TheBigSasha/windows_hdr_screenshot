@@ -29,7 +29,7 @@ def test_write_and_probe_pq(tmp_path, hdr_scene):
     assert meta["transfer_characteristics"] == 16        # PQ
     assert meta["color_primaries"] == 9                  # BT.2020
     assert meta["matrix_coefficients"] == 9              # BT.2020 non-constant luminance
-    assert meta["full_range_flag"] == 1                  # full-range PQ sample codes
+    assert meta["full_range_flag"] == 0                  # provider-emitted limited-range NCLX
     assert meta["width"] == hdr_scene.shape[1]
     assert meta["height"] == hdr_scene.shape[0]
 

@@ -47,11 +47,11 @@ def write_avif_pq(path: str, linear: np.ndarray, quality: int = 90) -> dict:
         np.ascontiguousarray(pq10),
         level=max(0, min(100, quality)),
         bitspersample=10,
-        # imagecodecs/libavif sets the full-range flag for subsampled YUV
-        # formats, while its YUV444 path leaves the image at limited range.
-        # The PQ10 buffer is full-range, so use YUV420 and verify the emitted
-        # CICP/NCLX contract below rather than silently writing mismatched HDR.
-        pixelformat="yuv420",
+        # imagecodecs/libavif exposes no range keyword and its native provider
+        # emits limited-range NCLX for this RGB-to-YUV path. Keep the
+        # non-subsampled 10-bit format and verify that exact emitted contract
+        # below rather than silently writing mismatched HDR metadata.
+        pixelformat="yuv444",
         primaries=CP_BT2020,
         transfer=TC_PQ,
         matrix=MC_BT2020_NCL,
@@ -97,7 +97,7 @@ def _assert_cicp(data: bytes) -> dict[str, int]:
         "color_primaries": CP_BT2020,
         "transfer_characteristics": TC_PQ,
         "matrix_coefficients": MC_BT2020_NCL,
-        "full_range_flag": 1,
+        "full_range_flag": 0,
     }
     actual = _read_nclx(data)
     if actual is None or actual != expected:
