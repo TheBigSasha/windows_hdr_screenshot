@@ -2,7 +2,9 @@
 # validated by the matrix; optional codec providers are intentionally excluded.
 altgraph==0.17.4
 comtypes==1.4.11
-numpy==2.2.6
+# 2.3.0 is the first pinned release with an official CPython 3.12 Windows
+# ARM64 wheel; 2.2.6 falls back to a native source build on the ARM runner.
+numpy==2.3.0
 packaging==25.0
 Pillow==11.3.0
 PyInstaller==6.14.2

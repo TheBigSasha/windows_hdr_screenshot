@@ -385,7 +385,7 @@ def test_avif_writer_passes_all_cicp_fields(monkeypatch, tmp_path):
 
     def avif_encode(pixels, **kwargs):
         seen.update(kwargs)
-        return b"nclx" + struct.pack(">HHH", 9, 16, 9) + b"\x01\x00"
+        return b"nclx" + struct.pack(">HHH", 9, 16, 9) + b"\x00\x00"
 
     monkeypatch.setitem(sys.modules, "imagecodecs", SimpleNamespace(avif_encode=avif_encode))
     result = avif_hdr.write_avif_pq(
@@ -400,7 +400,7 @@ def test_avif_writer_passes_all_cicp_fields(monkeypatch, tmp_path):
         "color_primaries": 9,
         "transfer_characteristics": 16,
         "matrix_coefficients": 9,
-        "full_range_flag": 1,
+        "full_range_flag": 0,
     }
 
 
