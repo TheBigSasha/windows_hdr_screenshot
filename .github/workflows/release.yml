@@ -102,7 +102,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'CLI version smoke test failed' }
           $installerBase = "HDRShot-$version-${{ matrix.asset_suffix }}-setup"
           Remove-Item -LiteralPath release-installer, installer-work, installer-spec -Recurse -Force -ErrorAction SilentlyContinue
-          python -m PyInstaller --onefile --noconfirm --clean --name $installerBase --distpath release-installer --workpath installer-work --specpath installer-spec --add-data "$zip;payload" --add-data "$($zip).sha256;payload" packaging/installer.py
+          python -m PyInstaller --onefile --noconfirm --clean --noconsole --name $installerBase --distpath release-installer --workpath installer-work --specpath installer-spec --add-data "$zip;payload" --add-data "$($zip).sha256;payload" packaging/installer.py
           $installer = Join-Path $releaseDir "$installerBase.exe"
           Copy-Item "release-installer/$installerBase.exe" $installer
           $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
