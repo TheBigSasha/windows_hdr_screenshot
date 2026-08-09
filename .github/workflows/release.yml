@@ -163,7 +163,7 @@ jobs:
       - name: Extract and verify exact archive bytes
         shell: pwsh
         run: |
-          $archives = @(Get-ChildItem downloaded -File -Filter "HDRShot-*-${{ matrix.asset_suffix }}.zip")
+          $archives = @(Get-ChildItem downloaded -Recurse -File -Filter "HDRShot-*-${{ matrix.asset_suffix }}.zip")
           if ($archives.Count -ne 1) { throw "expected exactly one ${{ matrix.asset_arch }} archive, found $($archives.Count)" }
           $archive = $archives[0]
           $nameMatch = [regex]::Match($archive.Name, '^HDRShot-(.+)-${{ matrix.asset_suffix }}\.zip$')
@@ -198,8 +198,8 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF_NAME
           $version = $tag.Substring(1)
-          $x64 = @(Get-ChildItem release-assets -File -Filter "HDRShot-$version-win64.zip")
-          $arm = @(Get-ChildItem release-assets -File -Filter "HDRShot-$version-win-arm64.zip")
+          $x64 = @(Get-ChildItem release-assets -Recurse -File -Filter "HDRShot-$version-win64.zip")
+          $arm = @(Get-ChildItem release-assets -Recurse -File -Filter "HDRShot-$version-win-arm64.zip")
           if ($x64.Count -ne 1 -or $arm.Count -ne 1) { throw 'exactly one archive for each architecture is required' }
           if ($x64[0].Name -cne "HDRShot-$version-win64.zip" -or
               $arm[0].Name -cne "HDRShot-$version-win-arm64.zip") {
@@ -212,8 +212,8 @@ jobs:
           $version = $env:GITHUB_REF_NAME.Substring(1)
           $tag = $env:GITHUB_REF_NAME
           $urlBase = "https://github.com/TheBigSasha/windows_hdr_screenshot/releases/download/$tag"
-          $x64 = Get-Item "release-assets/HDRShot-$version-win64.zip"
-          $arm = Get-Item "release-assets/HDRShot-$version-win-arm64.zip"
+          $x64 = Get-ChildItem release-assets -Recurse -File -Filter "HDRShot-$version-win64.zip" | Select-Object -First 1
+          $arm = Get-ChildItem release-assets -Recurse -File -Filter "HDRShot-$version-win-arm64.zip" | Select-Object -First 1
           $x64Hash = (Get-FileHash $x64.FullName -Algorithm SHA256).Hash
           $armHash = (Get-FileHash $arm.FullName -Algorithm SHA256).Hash
           $winget = Join-Path $PWD 'winget-generated'
@@ -223,14 +223,14 @@ jobs:
             --x64-archive $x64.FullName --arm64-archive $arm.FullName `
             --out-dir $winget --validate
           Compress-Archive -Path "$winget/*" -DestinationPath "release-assets/TheBigSasha.HDRShot.$version.winget.zip"
-          $assets = @(Get-ChildItem release-assets -File | ForEach-Object FullName)
+          $assets = @(Get-ChildItem release-assets -Recurse -File | ForEach-Object FullName)
           if ($assets.Count -eq 0) { throw 'no release assets were prepared' }
           $assets | Set-Content -Encoding utf8 release-assets.txt
 
       - name: Generate signed build provenance for both archives
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: release-assets/HDRShot-*.zip
+          subject-path: release-assets/**/HDRShot-*.zip
 
       - name: Create a draft release only
         shell: pwsh

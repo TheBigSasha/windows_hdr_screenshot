@@ -188,7 +188,7 @@ jobs:
       - name: Validate SBOM and WinGet metadata from exact archives
         shell: pwsh
         run: |
-          $archives = @(Get-ChildItem metadata-input -File -Filter 'HDRShot-*.zip')
+          $archives = @(Get-ChildItem metadata-input -Recurse -File -Filter 'HDRShot-*.zip')
           if ($archives.Count -ne 2) { throw "expected two architecture archives, found $($archives.Count)" }
           $version = ([regex]::Match($archives[0].Name, '^HDRShot-(.+)-win(?:64|arm64)\.zip$')).Groups[1].Value
           if (-not $version) { throw 'could not derive package version' }
