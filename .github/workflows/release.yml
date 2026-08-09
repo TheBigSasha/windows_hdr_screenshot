@@ -86,13 +86,14 @@ jobs:
           New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
           Copy-Item LICENSE, THIRD_PARTY_NOTICES.md, README.md packaging/dist/HDRShot/
           Copy-Item packaging/bundle-capabilities.json packaging/dist/HDRShot/
-          $licensePath = Join-Path $releaseDir 'LICENSE.LGPL-3.0.txt'
-          Invoke-WebRequest -Uri 'https://www.gnu.org/licenses/lgpl-3.0.txt' -OutFile $licensePath
-          $licenseHash = (Get-FileHash -LiteralPath $licensePath -Algorithm SHA256).Hash
+          $licenseSource = Join-Path $PWD 'packaging/LICENSE.LGPL-3.0.txt'
+          if (-not (Test-Path -LiteralPath $licenseSource -PathType Leaf)) { throw "missing checked-in LGPL notice $licenseSource" }
+          $licenseHash = (Get-FileHash -LiteralPath $licenseSource -Algorithm SHA256).Hash
           if ($licenseHash -ne 'E3A994D82E644B03A792A930F574002658412F62407F5FEE083F2555C5F23118') {
             throw "LGPL text digest changed: $licenseHash"
           }
-          Copy-Item $licensePath packaging/dist/HDRShot/
+          Copy-Item $licenseSource (Join-Path $releaseDir 'LICENSE.LGPL-3.0.txt')
+          Copy-Item $licenseSource packaging/dist/HDRShot/
           Compress-Archive -Path packaging/dist/HDRShot -DestinationPath (Join-Path $releaseDir "$name.zip")
           $zip = Join-Path $releaseDir "$name.zip"
           $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
