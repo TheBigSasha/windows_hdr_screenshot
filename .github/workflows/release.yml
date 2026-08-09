@@ -15,7 +15,7 @@ env:
 
 jobs:
   quality:
-    uses: ./.github/workflows/ci.yml
+    uses: TheBigSasha/windows_hdr_screenshot/.github/workflows/ci.yml@89dba683dcfe59ea7634328deb99f1739b08603f
     permissions:
       contents: read
 
