@@ -3,14 +3,14 @@
 HDR Shot captures the Windows desktop from the DXGI scRGB floating-point
 framebuffer, preserving highlights above SDR white. It writes a gain-map
 UltraHDR JPEG by default for HDR content and PNG for SDR content, with explicit
-optional profiles for OpenEXR, HEIC, SDR AVIF, and HDR PQ AVIF.
+profiles for linear EXR, single-rendition PQ AVIF/HEIC, and SDR AVIF.
 
 ## Features
 
 - Native Windows HDR capture with multi-monitor and region stitching.
 - UltraHDR JPEG with MPF, `hdrgm` XMP, and ISO 21496-1 gain-map metadata.
 - Lossless linear OpenEXR, 10-bit BT.2020 PQ HEIC, 8-bit SDR AVIF, and 10-bit
-  PQ HDR AVIF through opt-in extras.
+  PQ AVIF through opt-in extras.
 - A single runtime capability registry used by the pipeline, CLI, GUI,
   preferences, configuration, self-test, and agent JSON.
 - Machine-readable `parse`, `check`, `capture`, and `capabilities` commands.
@@ -62,16 +62,19 @@ pip install ".[avif-hdr]"
 pip install ".[all]"
 ```
 
-The `avif` compatibility alias resolves to `avif-hdr` for HDR content and
-`avif-sdr` for SDR content. If that exact profile is unavailable, the command
-fails with `CodecUnavailableError`; HDR is never silently converted to SDR.
+Canonical profiles carry their representation: `uhdr-jpeg` is a gain-map JPEG,
+`pq-avif` and `pq-heic` are single-rendition PQ outputs, and `avif-sdr` is
+ordinary SDR. The legacy aliases `ultrahdr`, `avif`, and `heic` retain their
+historical meanings (`uhdr-jpeg`, `pq-avif`, and `pq-heic` respectively). If an
+explicit profile is unavailable, the command fails with a structured
+`CodecUnavailableError`; it never silently changes representation.
 
 ## Usage
 
 ```bat
 python -m hdrshot info
 python -m hdrshot full --all --format auto
-python -m hdrshot region 100 100 800 600 --format ultrahdr
+python -m hdrshot region 100 100 800 600 --format uhdr-jpeg
 python -m hdrshot capabilities
 python -m hdrshot selftest
 ```
@@ -80,7 +83,7 @@ For agents:
 
 ```bash
 hdrshot capabilities --json
-hdrshot capture --display 0 --format ultrahdr --out ./shots --preview ./shots/p.png
+hdrshot capture --display 0 --format uhdr-jpeg --out ./shots --preview ./shots/p.png
 hdrshot parse ./shots/shot.jpg
 hdrshot check ./shots/shot.jpg --min-stops 1
 ```
@@ -95,11 +98,11 @@ machine-facing contract.
 
 | Profile | Representation | Dependency |
 | --- | --- | --- |
-| `ultrahdr` | gain-map JPEG | bundled |
+| `uhdr-jpeg` | gain-map JPEG | bundled (`ultrahdr` is a legacy alias) |
 | `exr` | linear half-float | `[exr]` |
-| `heic` | 10-bit BT.2020 PQ | `[heic]` (x265/GPL; not bundled) |
+| `pq-heic` | 10-bit BT.2020 PQ | `[heic]` (x265/GPL; not bundled) |
 | `avif-sdr` | 8-bit SDR AVIF | `[avif-sdr]` |
-| `avif-hdr` | 10-bit BT.2020 PQ AVIF | `[avif-hdr]` |
+| `pq-avif` | 10-bit BT.2020 PQ AVIF | `[avif-hdr]` |
 | `png`, `jpeg` | SDR | bundled |
 
 The GUI disables profiles that are unavailable and explains whether the provider

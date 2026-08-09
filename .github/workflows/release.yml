@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  EXPECTED_PROFILES: ultrahdr,png,jpeg
+  EXPECTED_PROFILES: uhdr-jpeg,png,jpeg
 
 jobs:
   quality:
@@ -21,6 +21,8 @@ jobs:
 
   build:
     needs: quality
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -50,7 +52,7 @@ jobs:
           $runtime = (& python -c "import hdrshot; print(hdrshot.__version__)").Trim()
           if ($env:GITHUB_REF -like 'refs/tags/*') {
             $tagVersion = $env:GITHUB_REF_NAME.Substring(1)
-            if ($runtime -ne $tagVersion) { throw "tag $tagVersion != runtime $runtime" }
+            if ($runtime -cne $tagVersion) { throw "tag $tagVersion != runtime $runtime" }
           }
           if ((Get-Content pyproject.toml -Raw) -notmatch 'dynamic = \["version"\]') {
             throw 'package metadata is not single-sourced from runtime version'
@@ -62,13 +64,13 @@ jobs:
           $manifest = @{
             schema_version = 1
             architecture = '${{ matrix.asset_arch }}'
-            expected_profiles = @('ultrahdr', 'png', 'jpeg')
+            expected_profiles = @('uhdr-jpeg', 'png', 'jpeg')
           } | ConvertTo-Json -Depth 4
           $manifest | Set-Content -Encoding utf8 packaging/bundle-capabilities.json
 
       - name: Install locked release environment
         run: |
-          python -m pip install --disable-pip-version-check --no-cache-dir -c packaging/constraints-release.txt -e ".[gui]" pyinstaller
+          python -m pip install --disable-pip-version-check --no-cache-dir -c packaging/constraints-release.txt ".[gui]" pyinstaller
           python -m pip check
 
       - name: Build native onedir bundle
@@ -103,34 +105,48 @@ jobs:
         run: |
           $version = (& python -c "import hdrshot; print(hdrshot.__version__)").Trim()
           $name = "HDRShot-$version-${{ matrix.asset_suffix }}"
-          python packaging/generate_sbom.py --out "release-artifacts/$name.sbom.spdx.json"
+          $extract = Join-Path $PWD "release-artifacts/sbom-$name"
+          New-Item -ItemType Directory -Path $extract -Force | Out-Null
+          Expand-Archive -LiteralPath "release-artifacts/$name.zip" -DestinationPath $extract
+          python packaging/generate_sbom.py --bundle (Join-Path $extract 'HDRShot') --out "release-artifacts/$name.sbom.spdx.json" --validate
+          Remove-Item -LiteralPath $extract -Recurse -Force
 
-      - name: Verify the build directory before upload
+      - name: Verify the freshly built archive on its native runner
         shell: pwsh
         run: |
           $version = (& python -c "import hdrshot; print(hdrshot.__version__)").Trim()
-          $archive = Get-ChildItem release-artifacts -Filter "HDRShot-$version-*.zip" | Select-Object -First 1
-          ./packaging/verify_bundle.ps1 -Archive $archive.FullName -ExpectedVersion $version -ExpectedArchitecture '${{ matrix.asset_arch }}' -OutputDirectory release-artifacts/build-verification
+          $archive = Join-Path $PWD "release-artifacts/HDRShot-$version-${{ matrix.asset_suffix }}.zip"
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw "missing $archive" }
+          ./packaging/verify_bundle.ps1 -Archive $archive -ExpectedVersion $version -ExpectedArchitecture '${{ matrix.asset_arch }}' -OutputDirectory release-artifacts/build-verification
 
       - name: Upload internal artifact only
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bundle-${{ matrix.asset_arch }}
-          path: release-artifacts/
+          path: |
+            release-artifacts/HDRShot-*.zip
+            release-artifacts/HDRShot-*.zip.sha256
+            release-artifacts/HDRShot-*.sbom.spdx.json
           if-no-files-found: error
           retention-days: 14
 
   verify:
     needs: build
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - asset_arch: x64
+          - runner: windows-2025
+            asset_arch: x64
             asset_suffix: win64
-          - asset_arch: arm64
+          - runner: windows-11-arm
+            asset_arch: arm64
             asset_suffix: win-arm64
-    runs-on: windows-2025
+    # Verification is native too: a Windows x64 verifier must not be allowed
+    # to certify the ARM64 artifact (or vice versa).
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out verification scripts
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -147,13 +163,18 @@ jobs:
       - name: Extract and verify exact archive bytes
         shell: pwsh
         run: |
-          $archive = Get-ChildItem downloaded -Filter "HDRShot-*-${{ matrix.asset_suffix }}.zip" | Select-Object -First 1
-          if (-not $archive) { throw 'expected archive was not downloaded' }
-          $version = [regex]::Match($archive.Name, '^HDRShot-(.+)-${{ matrix.asset_suffix }}\.zip$').Groups[1].Value
-          if (-not $version) { throw "could not derive package version from $($archive.Name)" }
+          $archives = @(Get-ChildItem downloaded -File -Filter "HDRShot-*-${{ matrix.asset_suffix }}.zip")
+          if ($archives.Count -ne 1) { throw "expected exactly one ${{ matrix.asset_arch }} archive, found $($archives.Count)" }
+          $archive = $archives[0]
+          $nameMatch = [regex]::Match($archive.Name, '^HDRShot-(.+)-${{ matrix.asset_suffix }}\.zip$')
+          if (-not $nameMatch.Success) { throw "could not derive package version from $($archive.Name)" }
+          $version = $nameMatch.Groups[1].Value
+          if ($env:GITHUB_REF -like 'refs/tags/*' -and $version -cne $env:GITHUB_REF_NAME.Substring(1)) {
+            throw "archive version $version does not exactly match tag $($env:GITHUB_REF_NAME)"
+          }
           ./packaging/verify_bundle.ps1 -Archive $archive.FullName -ExpectedVersion $version -ExpectedArchitecture '${{ matrix.asset_arch }}' -OutputDirectory verification
 
-  publish:
+  publish-draft:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [build, verify]
     runs-on: windows-2025
@@ -162,7 +183,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - name: Check out release metadata
+      - name: Check out release metadata and verifier
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Download both verified build artifacts
@@ -172,53 +193,46 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Validate exact tag identity
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = $tag.Substring(1)
+          $x64 = @(Get-ChildItem release-assets -File -Filter "HDRShot-$version-win64.zip")
+          $arm = @(Get-ChildItem release-assets -File -Filter "HDRShot-$version-win-arm64.zip")
+          if ($x64.Count -ne 1 -or $arm.Count -ne 1) { throw 'exactly one archive for each architecture is required' }
+          if ($x64[0].Name -cne "HDRShot-$version-win64.zip" -or
+              $arm[0].Name -cne "HDRShot-$version-win-arm64.zip") {
+            throw "archive names do not exactly match tag version $version"
+          }
+
       - name: Create WinGet manifests from exact archive hashes
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME.Substring(1)
           $tag = $env:GITHUB_REF_NAME
           $urlBase = "https://github.com/TheBigSasha/windows_hdr_screenshot/releases/download/$tag"
-          $x64 = Get-ChildItem release-assets -Filter "HDRShot-$version-win64.zip" | Select-Object -First 1
-          $arm = Get-ChildItem release-assets -Filter "HDRShot-$version-win-arm64.zip" | Select-Object -First 1
-          if (-not $x64 -or -not $arm) { throw 'both architecture archives are required before publishing' }
+          $x64 = Get-Item "release-assets/HDRShot-$version-win64.zip"
+          $arm = Get-Item "release-assets/HDRShot-$version-win-arm64.zip"
           $x64Hash = (Get-FileHash $x64.FullName -Algorithm SHA256).Hash
           $armHash = (Get-FileHash $arm.FullName -Algorithm SHA256).Hash
-          $winget = New-Item -ItemType Directory -Path winget-generated -Force
-          @"
-          PackageIdentifier: TheBigSasha.HDRShot
-          PackageVersion: "$version"
-          Installers:
-            - Architecture: x64
-              InstallerUrl: $urlBase/$($x64.Name)
-              InstallerSha256: $x64Hash
-            - Architecture: arm64
-              InstallerUrl: $urlBase/$($arm.Name)
-              InstallerSha256: $armHash
-          NestedInstallerType: portable
-          NestedInstallerFiles:
-            - RelativeFilePath: HDRShot\\HDRShot.exe
-              PortableCommandAlias: hdrshot-gui
-            - RelativeFilePath: HDRShot\\hdrshot-cli.exe
-              PortableCommandAlias: hdrshot
-          InstallerType: zip
-          ManifestType: installer
-          ManifestVersion: 1.6.0
-          "@ | Set-Content -Encoding utf8 (Join-Path $winget 'TheBigSasha.HDRShot.installer.yaml')
-          @"
-          PackageIdentifier: TheBigSasha.HDRShot
-          PackageVersion: "$version"
-          DefaultLocale: en-US
-          ManifestType: version
-          ManifestVersion: 1.6.0
-          "@ | Set-Content -Encoding utf8 (Join-Path $winget 'TheBigSasha.HDRShot.yaml')
-          Compress-Archive -Path winget-generated/* -DestinationPath "release-assets/TheBigSasha.HDRShot.$version.winget.zip"
+          $winget = Join-Path $PWD 'winget-generated'
+          New-Item -ItemType Directory -Path $winget -Force | Out-Null
+          python packaging/generate_winget.py --version $version `
+            --x64-url "$urlBase/$($x64.Name)" --arm64-url "$urlBase/$($arm.Name)" `
+            --x64-archive $x64.FullName --arm64-archive $arm.FullName `
+            --out-dir $winget --validate
+          Compress-Archive -Path "$winget/*" -DestinationPath "release-assets/TheBigSasha.HDRShot.$version.winget.zip"
+          $assets = @(Get-ChildItem release-assets -File | ForEach-Object FullName)
+          if ($assets.Count -eq 0) { throw 'no release assets were prepared' }
+          $assets | Set-Content -Encoding utf8 release-assets.txt
 
       - name: Generate signed build provenance for both archives
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: release-assets/HDRShot-*.zip
 
-      - name: Publish one release containing both verified assets
+      - name: Create a draft release only
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -228,24 +242,92 @@ jobs:
           @"
           Standalone Windows builds of HDR Shot $version.
 
-          Assets are native x64 and ARM64 onedir bundles. Each archive was built,
-          extracted, capability-checked, self-tested, hashed, and attested before
-          this publish job. Use HDRShot\\HDRShot.exe for the GUI or
-          HDRShot\\hdrshot-cli.exe for scripts and agents.
+          Assets are native x64 and ARM64 onedir bundles. They are kept in draft
+          until the uploaded bytes pass the same archive verifier used by CI.
+          Use HDRShot\\HDRShot.exe for the GUI or HDRShot\\hdrshot-cli.exe for scripts.
           "@ | Set-Content -Encoding utf8 release-notes.md
-          $assets = Get-ChildItem release-assets -File | Where-Object { $_.Name -match '\.(zip|sha256|json)$' } | ForEach-Object FullName
-          gh release create $tag $assets --verify-tag --title "HDR Shot $version" --notes-file release-notes.md
+          gh release create $tag --draft --verify-tag --title "HDR Shot $version" --notes-file release-notes.md
 
-      - name: Download published bytes and verify hashes
+      - name: Upload exact assets to the draft release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $assets = @(Get-Content -LiteralPath release-assets.txt)
+          gh release upload $env:GITHUB_REF_NAME $assets --clobber
+
+  verify-draft:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: publish-draft
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            asset_arch: x64
+            asset_suffix: win64
+          - runner: windows-11-arm
+            asset_arch: arm64
+            asset_suffix: win-arm64
+    # The draft asset is verified on the same native runner family that built
+    # it, including the packaged Qt smoke path in verify_bundle.ps1.
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out the verifier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: |
+            packaging/verify_bundle.ps1
+
+      - name: Download exact uploaded draft bytes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = $tag.Substring(1)
+          $dir = Join-Path $PWD draft-verification
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $archiveName = "HDRShot-$version-${{ matrix.asset_suffix }}.zip"
+          gh release download $tag --dir $dir --pattern $archiveName --pattern "$archiveName.sha256"
+          $archives = @(Get-ChildItem $dir -File -Filter $archiveName)
+          if ($archives.Count -ne 1) { throw "expected one uploaded $archiveName" }
+          ./packaging/verify_bundle.ps1 -Archive $archives[0].FullName -ExpectedVersion $version -ExpectedArchitecture '${{ matrix.asset_arch }}' -OutputDirectory (Join-Path $dir "verified-${{ matrix.asset_arch }}")
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: verify-draft
+    runs-on: windows-2025
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the verified draft as the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit $env:GITHUB_REF_NAME --draft=false
+
+      - name: Re-download and verify public release hashes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
           $dir = Join-Path $PWD published-verification
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
-          gh release download $env:GITHUB_REF_NAME --dir $dir --pattern 'HDRShot-*.zip' --pattern 'HDRShot-*.zip.sha256'
-          foreach ($zip in Get-ChildItem $dir -Filter '*.zip') {
-            $sum = (Get-Content "$($zip.FullName).sha256" | Select-Object -First 1).Split()[0].ToLowerInvariant()
-            $actual = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($sum -ne $actual) { throw "published hash mismatch for $($zip.Name)" }
+          gh release download $env:GITHUB_REF_NAME --dir $dir --pattern "HDRShot-$version-win64.zip" --pattern "HDRShot-$version-win64.zip.sha256" --pattern "HDRShot-$version-win-arm64.zip" --pattern "HDRShot-$version-win-arm64.zip.sha256"
+          $archives = @(Get-ChildItem $dir -File -Filter "HDRShot-$version-*.zip")
+          if ($archives.Count -ne 2) { throw "expected exactly two public architecture archives" }
+          foreach ($zip in $archives) {
+            $sidecar = "$($zip.FullName).sha256"
+            if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) { throw "missing public sidecar for $($zip.Name)" }
+            $lines = @(Get-Content -LiteralPath $sidecar | Where-Object { $_.Trim() -ne '' })
+            if ($lines.Count -ne 1) { throw "invalid public sidecar for $($zip.Name)" }
+            $match = [regex]::Match($lines[0].Trim(), '^(?<hash>[0-9A-Fa-f]{64})\s+\*?(?<name>\S+)$')
+            if (-not $match.Success -or $match.Groups['name'].Value -cne $zip.Name) { throw "invalid public sidecar record for $($zip.Name)" }
+            $expected = $match.Groups['hash'].Value.ToLowerInvariant()
+            $actual = (Get-FileHash -LiteralPath $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($expected -ne $actual) { throw "public hash mismatch for $($zip.Name)" }
           }

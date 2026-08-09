@@ -10,7 +10,7 @@ genuinely HDR (has highlights above SDR white) rather than an 8-bit SDR frame â€
 something you cannot tell by viewing a tonemapped preview, where blown highlights
 look like flat white.
 
-Supports **UltraHDR JPEG, OpenEXR, HEIC, AVIF, PNG, JPEG**.
+ Supports **UltraHDR JPEG, OpenEXR, PQ HEIC, PQ AVIF, PNG, JPEG**.
 
 ## Fast boolean check (exit code)
 
@@ -48,7 +48,7 @@ Returns JSON describing the container and luminance. Examples of the key fields:
 
 - **Source of truth = the numbers**, not a preview PNG. `peak_nits`/`peak_ratio`/
   `*_stops` reflect the true signal; a tonemapped preview clips highlights.
-- **`peak_nits` is exact for EXR/HEIC** and **unknown for UltraHDR** (its gain map
+- **`peak_nits` is exact for EXR** and **unknown for PQ HEIC/PQ AVIF and UltraHDR** (gain-map
   is relative to SDR white â€” use `gainmap_max_stops`, or re-capture as EXR for
   absolute nits).
 - **Undetermined (exit 2)** usually means an optional dependency is missing (e.g.
@@ -57,6 +57,6 @@ Returns JSON describing the container and luminance. Examples of the key fields:
 ## Typical use: verify your own capture
 
 ```bash
-hdrshot capture --display 0 --format ultrahdr --out ./out --preview ./out/p.png
+hdrshot capture --display 0 --format uhdr-jpeg --out ./out --preview ./out/p.png
 hdrshot check ./out/*.jpg --min-stops 1 || echo "WARNING: capture is not HDR"
 ```

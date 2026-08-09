@@ -52,20 +52,27 @@ def _verify_heic(path: str) -> str:
     import pillow_heif  # pyright: ignore[reportMissingImports]
     im = pillow_heif.open_heif(path, convert_hdr_to_8bit=False)[0]
     n = im.info.get("nclx_profile", {})
-    if im.info.get("bit_depth") != 10 or n.get("transfer_characteristics") != 16:
-        raise ValueError("HEIC is not a 10-bit PQ image")
-    return f"10-bit, transfer={n.get('transfer_characteristics')} (16=PQ), " \
-           f"primaries={n.get('color_primaries')} (9=BT.2020)"
+    expected = {"color_primaries": 9, "transfer_characteristics": 16,
+                "matrix_coefficients": 9, "full_range_flag": 1}
+    if im.info.get("bit_depth") != 10 or any(n.get(k) != v for k, v in expected.items()):
+        raise ValueError(f"HEIC is not a complete 10-bit BT.2020 PQ image: {n}")
+    return (f"10-bit, transfer={n.get('transfer_characteristics')} (16=PQ), "
+            f"primaries={n.get('color_primaries')} (9=BT.2020), "
+            f"matrix={n.get('matrix_coefficients')} (9), full_range={n.get('full_range_flag')}")
 
 
 def _verify_avif(path: str, hdr: bool) -> str:
     from .encoders import avif_hdr
     if hdr:
         meta = avif_hdr.probe(path)
-        if not meta or meta.get("bit_depth") != 10 or meta.get("transfer_characteristics") != 16:
-            raise ValueError("AVIF is not a 10-bit PQ image")
+        expected = {"color_primaries": 9, "transfer_characteristics": 16,
+                    "matrix_coefficients": 9, "full_range_flag": 1}
+        if (not meta or meta.get("bit_depth") != 10 or
+                any(meta.get(k) != v for k, v in expected.items())):
+            raise ValueError(f"AVIF is not a complete 10-bit BT.2020 PQ image: {meta}")
         return (f"10-bit, transfer={meta.get('transfer_characteristics')} (16=PQ), "
-                f"primaries={meta.get('color_primaries')} (9=BT.2020)")
+                f"primaries={meta.get('color_primaries')} (9=BT.2020), "
+                f"matrix={meta.get('matrix_coefficients')} (9), full_range={meta.get('full_range_flag')}")
     from PIL import Image
     with Image.open(path) as im:
         if im.mode not in {"RGB", "RGBA"}:
@@ -76,11 +83,11 @@ def _verify_avif(path: str, hdr: bool) -> str:
 def _verify(profile: str, path: str) -> str:
     if profile == "exr":
         return _verify_exr(path)
-    if profile == "ultrahdr":
+    if profile == "uhdr-jpeg":
         return _verify_ultrahdr(path)
-    if profile == "heic":
+    if profile == "pq-heic":
         return _verify_heic(path)
-    if profile == "avif-hdr":
+    if profile == "pq-avif":
         return _verify_avif(path, True)
     if profile == "avif-sdr":
         return _verify_avif(path, False)

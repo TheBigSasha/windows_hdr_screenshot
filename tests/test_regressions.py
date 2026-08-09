@@ -74,7 +74,7 @@ def test_main_capture_bad_region_emits_json_error_exit_3(capsys):
 def test_detect_format_scans_whole_file():
     # Real-world UltraHDR can carry EXIF/ICC first: markers sit past any 4 KiB prefix.
     data = b"\xff\xd8" + b"\x00" * 5000 + b"MPF\x00hdr-gain-map"
-    assert agentcli._detect_format("x.jpg", data) == "ultrahdr"
+    assert agentcli._detect_format("x.jpg", data) == "uhdr-jpeg"
 
 
 @pytest.mark.skipif(not exr.available(), reason=EXR_SKIP_REASON)
@@ -188,10 +188,10 @@ def test_gainmap_capacities_strictly_separated():
 def test_capability_registry_exposes_structured_statuses():
     payload = capabilities_payload()
     profiles = {entry["profile"]: entry for entry in payload["profiles"]}
-    assert set(profiles) == {"ultrahdr", "exr", "heic", "png", "jpeg",
-                             "avif-sdr", "avif-hdr"}
-    assert profiles["ultrahdr"]["status"] == "available"
-    assert profiles["ultrahdr"]["hdr_representation"] == "gain_map"
+    assert set(profiles) == {"uhdr-jpeg", "uhdr-avif", "uhdr-heic", "pq-avif",
+                             "pq-heic", "exr", "png", "jpeg", "avif-sdr"}
+    assert profiles["uhdr-jpeg"]["status"] == "available"
+    assert profiles["uhdr-jpeg"]["hdr_representation"] == "gain_map"
     assert all(entry["status"] in {"available", "missing", "broken", "excluded"}
                for entry in profiles.values())
 

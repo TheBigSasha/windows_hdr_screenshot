@@ -41,7 +41,7 @@ Returns `virtual_desktop`, `any_hdr_enabled`, and per-display `hdr_enabled`,
 ### 2. One-shot capture → true-HDR file + viewable SDR preview + JSON
 ```bash
 # Whole display 0:
-hdrshot capture --display 0 --format ultrahdr --out ./shots --preview ./shots/preview.png
+hdrshot capture --display 0 --format uhdr-jpeg --out ./shots --preview ./shots/preview.png
 # A virtual-desktop rectangle (x y w h):
 hdrshot capture --region 100 100 1200 800 --format auto --out ./shots --preview ./shots/preview.png
 ```
@@ -71,15 +71,16 @@ hdrshot check ./shots/shot.jpg --min-stops 2    # also require >= 2 stops headro
 | Format     | HDR? | Use when |
 |------------|------|----------|
 | `auto`     | —    | Default. UltraHDR for HDR content, PNG for SDR. |
-| `ultrahdr` | yes  | Portable "HDR-in-a-JPEG" (gain map). The SDR base is broadly readable; HDR rendering depends on the viewer and display. Best default. |
+| `uhdr-jpeg` | yes  | Portable "HDR-in-a-JPEG" (gain map). The SDR base is broadly readable; HDR rendering depends on the viewer and display. Best default. Legacy alias: `ultrahdr`. |
 | `exr`      | yes  | Lossless linear scRGB. Exact luminance for analysis/archival. `parse` reports precise `peak_nits`. |
-| `heic`     | yes  | 10-bit BT.2020 PQ (needs the `[heic]` extra). |
-| `avif-hdr` | yes  | Explicit 10-bit BT.2020 PQ (needs the `[avif-hdr]` extra). Never falls back. |
+| `pq-heic`  | yes  | Single-rendition 10-bit BT.2020 PQ (needs the `[heic]` extra). Legacy alias: `heic`. |
+| `pq-avif`  | yes  | Single-rendition 10-bit BT.2020 PQ (needs the `[avif-hdr]` extra). Legacy alias: `avif`. Never falls back. |
 | `avif-sdr` | no   | Explicit 8-bit SDR (needs the `[avif-sdr]` extra). |
 | `png`/`jpeg` | no | Plain SDR. |
 
 For **exact numeric analysis**, capture `exr` and `parse` it — `peak_nits` is the
-true luminance. For **sharing/rendering**, use `ultrahdr`.
+true luminance. For **sharing/rendering**, use `uhdr-jpeg` (or its legacy
+`ultrahdr` alias).
 
 ## Worked examples
 
@@ -94,7 +95,7 @@ code and the `peak_nits` in the capture JSON.
 
 **"Capture a region as UltraHDR and report peak nits."**
 ```bash
-hdrshot capture --region 0 0 800 600 --format ultrahdr --out ./r --preview ./r/p.png
+hdrshot capture --region 0 0 800 600 --format uhdr-jpeg --out ./r --preview ./r/p.png
 ```
 Read `captures[0].peak_nits` and `captures[0].gainmap_max_stops` from the JSON.
 (For UltraHDR, `peak_ratio_over_sdr_white = 2^gainmap_max_stops`; multiply by the
@@ -102,12 +103,12 @@ display `sdr_white_nits` for an absolute-nits estimate.)
 
 **"Compare how one scene encodes across UltraHDR / EXR / HEIC."**
 ```bash
-for f in ultrahdr exr heic; do
+for f in uhdr-jpeg exr pq-heic; do
   hdrshot capture --display 0 --format $f --out ./cmp
 done
 hdrshot parse ./cmp/*.jpg      # UltraHDR: gain-map stops
 hdrshot parse ./cmp/*.exr      # EXR: exact peak_nits
-hdrshot parse ./cmp/*.heic     # HEIC: 10-bit PQ nclx (transfer 16, primaries 9)
+hdrshot parse ./cmp/*.heic     # PQ HEIC: 10-bit CICP (primaries 9, transfer 16, matrix 9)
 ```
 
 ### 5. Check the exact encoder contract

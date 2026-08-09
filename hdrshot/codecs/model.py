@@ -2,10 +2,18 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Literal
+from typing import Literal, TypedDict
 
 CodecStatus = Literal["available", "missing", "broken", "excluded"]
 HdrRepresentation = Literal["gain_map", "pq", "linear", "sdr"]
+
+
+class BundleManifest(TypedDict):
+    """Validated capability contract shipped with a frozen application."""
+
+    schema_version: Literal[1]
+    architecture: str
+    expected_profiles: list[str]
 
 
 @dataclass(frozen=True)

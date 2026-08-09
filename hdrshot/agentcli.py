@@ -24,10 +24,11 @@ import json
 import logging
 import os
 import re
+from collections.abc import Mapping
+from typing import Any
 
 import numpy as np
 
-from .codecs import capabilities_payload
 from .core import color, pipeline
 
 log = logging.getLogger(__name__)
@@ -54,13 +55,35 @@ def _dumps(obj: dict) -> str:
 
 
 def _file_error(path: str, exc: Exception) -> dict:
-    return {
+    error = {
         "path": os.path.abspath(path),
         "format": None,
         "is_hdr": None,
         "error": f"{type(exc).__name__}: {exc}",
         "notes": PREVIEW_NOTE,
     }
+    cap = getattr(exc, "capability", None)
+    if cap is not None:
+        error.update({
+            "status": cap.status,
+            "reason": cap.reason,
+            "provider": cap.provider,
+            "provider_version": cap.provider_version,
+            "requested_profile": cap.profile,
+        })
+    elif isinstance(exc, pipeline.CodecEncodeError):
+        error.update({
+            "status": exc.status,
+            "reason": exc.reason,
+            "provider": exc.provider,
+            "provider_version": exc.provider_version,
+            "requested_profile": exc.requested_profile,
+            "actual_profile": exc.actual_profile,
+        })
+    else:
+        error.update({"status": None, "reason": None, "provider": None,
+                      "provider_version": None})
+    return error
 
 
 # --------------------------------------------------------------------------- #
@@ -92,18 +115,24 @@ def displays_to_json(disps, vb) -> str:
     })
 
 
-def capture_to_dict(display, result: pipeline.CaptureResult, info: dict,
+def capture_to_dict(display, result: pipeline.CaptureResult, info: Mapping[str, Any],
                     preview_path: str | None = None) -> dict:
     st = result.stats
     h, w = result.linear.shape[:2]
     out = {
         "path": info.get("path"),
         "format": info.get("format"),
+        "requested_format": info.get("requested_format", info.get("format")),
         "width": int(w),
         "height": int(h),
         "encoded_hdr": bool(info.get("hdr")),
         "requested_profile": info.get("requested_profile"),
         "actual_profile": info.get("actual_profile"),
+        "legacy_profile": info.get("legacy_profile"),
+        "container": info.get("container"),
+        "hdr_representation": info.get("hdr_representation"),
+        "metadata_standard": info.get("metadata_standard"),
+        "cicp": info.get("cicp"),
         "provider": info.get("provider"),
         "provider_version": info.get("provider_version"),
         "hdr_content": bool(result.hdr_capable_content),
@@ -136,7 +165,7 @@ def captures_to_json(results) -> str:
         display, result, info = row[0], row[1], row[2]
         preview = row[3] if len(row) > 3 else None
         caps.append(capture_to_dict(display, result, info, preview))
-    return _dumps({"captures": caps, "capabilities": capabilities_payload(),
+    return _dumps({"captures": caps, "capabilities": pipeline.capabilities_payload(),
                    "notes": PREVIEW_NOTE})
 
 
@@ -178,7 +207,7 @@ def _parse_ultrahdr(path: str, data: bytes) -> dict:
                or b"ISO 21496-1" in data)
     is_hdr = has_hdrgm or has_iso
     out = {
-        "format": "ultrahdr",
+        "format": "uhdr-jpeg",
         "is_hdr": bool(is_hdr),
         "container": {"mpf": has_mpf, "hdrgm_xmp": has_hdrgm, "iso_21496_1": has_iso},
     }
@@ -238,6 +267,7 @@ def _parse_heif(path: str, fmt: str) -> dict:
         "color_primaries": cp,
         "primaries_name": _name(_CP_NAMES, cp),
         "matrix_coefficients": n.get("matrix_coefficients"),
+        "full_range_flag": n.get("full_range_flag"),
         "width": im.size[0], "height": im.size[1],
     }
 
@@ -257,20 +287,22 @@ def _detect_format(path: str, head: bytes) -> str:
     prefix."""
     ext = os.path.splitext(path)[1].lower()
     if ext in (".jpg", ".jpeg"):
-        return "ultrahdr" if b"MPF\x00" in head or b"hdr-gain-map" in head else "jpeg"
+        return "uhdr-jpeg" if b"MPF\x00" in head or b"hdr-gain-map" in head else "jpeg"
     if ext == ".exr" or head[:4] == b"\x76\x2f\x31\x01":
         return "exr"
     if ext in (".heic", ".heif"):
-        return "heic"
+        return "pq-heic"
     if ext == ".avif":
-        return "avif"
+        nclx = _scan_avif_nclx(head)
+        return "pq-avif" if nclx is not None and nclx[1] == 16 else "avif-sdr"
     if ext == ".png":
         return "png"
     # Fall back to magic sniffing.
     if b"ftypheic" in head or b"ftypmif1" in head:
-        return "heic"
+        return "pq-heic"
     if b"ftypavif" in head:
-        return "avif"
+        nclx = _scan_avif_nclx(head)
+        return "pq-avif" if nclx is not None and nclx[1] == 16 else "avif-sdr"
     return "jpeg"
 
 
@@ -282,13 +314,13 @@ def parse_file(path: str) -> dict:
     fmt = _detect_format(path, data)
     result: dict
     try:
-        if fmt == "ultrahdr":
+        if fmt == "uhdr-jpeg":
             result = _parse_ultrahdr(path, data)
         elif fmt == "exr":
             result = _parse_exr(path)
-        elif fmt in ("heic", "heif"):
-            result = _parse_heif(path, "heic")
-        elif fmt == "avif":
+        elif fmt == "pq-heic":
+            result = _parse_heif(path, "pq-heic")
+        elif fmt in ("pq-avif", "avif-sdr"):
             result = _parse_avif(path, data)
         else:
             result = _parse_generic_sdr(path, fmt)
@@ -315,7 +347,7 @@ def _parse_avif(path: str, data: bytes) -> dict:
                 tc = meta.get("transfer_characteristics")
                 cp = meta.get("color_primaries")
                 return {
-                    "format": "avif",
+                    "format": "pq-avif" if tc == 16 or (meta.get("bit_depth", 8) >= 10) else "avif-sdr",
                     "is_hdr": bool(tc == 16 or (meta.get("bit_depth", 8) >= 10)),
                     "bit_depth": meta.get("bit_depth"),
                     "transfer_characteristics": tc,
@@ -323,6 +355,7 @@ def _parse_avif(path: str, data: bytes) -> dict:
                     "color_primaries": cp,
                     "primaries_name": _name(_CP_NAMES, cp),
                     "matrix_coefficients": meta.get("matrix_coefficients"),
+                    "full_range_flag": meta.get("full_range_flag"),
                     "width": meta.get("width"), "height": meta.get("height"),
                 }
     except Exception as e:  # pragma: no cover - best-effort probe
@@ -331,30 +364,31 @@ def _parse_avif(path: str, data: bytes) -> dict:
     # 10-bit PQ HDR AVIF is not misreported as SDR on a base install.
     nclx = _scan_avif_nclx(data)
     if nclx is not None:
-        cp, tc, mc = nclx
+        cp, tc, mc, full_range = nclx
         out = {
-            "format": "avif",
+            "format": "pq-avif" if tc == 16 else "avif-sdr",
             "is_hdr": bool(tc == 16),
             "transfer_characteristics": tc,
             "transfer_name": _name(_TC_NAMES, tc),
             "color_primaries": cp,
             "primaries_name": _name(_CP_NAMES, cp),
             "matrix_coefficients": mc,
+            "full_range_flag": full_range,
             "note": "container-level nclx probe (install hdrshot[avif-hdr] for bit depth)",
         }
         return out
-    return _parse_generic_sdr(path, "avif")
+    return _parse_generic_sdr(path, "avif-sdr")
 
 
-def _scan_avif_nclx(data: bytes) -> tuple[int, int, int] | None:
+def _scan_avif_nclx(data: bytes) -> tuple[int, int, int, int] | None:
     """Find the first ISOBMFF ``colr`` box with an ``nclx`` profile and return
-    (primaries, transfer, matrix), or None."""
+    (primaries, transfer, matrix, full-range flag), or None."""
     idx = data.find(b"colrnclx")
-    if idx < 0 or idx + 14 > len(data):
+    if idx < 0 or idx + 15 > len(data):
         return None
     import struct
     cp, tc, mc = struct.unpack(">HHH", data[idx + 8: idx + 14])
-    return cp, tc, mc
+    return cp, tc, mc, data[idx + 14] & 1
 
 
 # --------------------------------------------------------------------------- #
@@ -375,7 +409,7 @@ def write_preview_from_file(path: str, out_png: str) -> str:
         except Exception:
             rgb = np.stack([part.channels[c].pixels for c in ("R", "G", "B")], axis=-1)
         return write_preview_from_linear(np.asarray(rgb, np.float32), 80.0, out_png)
-    if fmt in ("heic", "heif"):
+    if fmt in ("pq-heic", "heic", "heif"):
         import pillow_heif  # pyright: ignore[reportMissingImports]
         im = pillow_heif.open_heif(path, convert_hdr_to_8bit=True)[0].to_pillow()
         im.convert("RGB").save(out_png, format="PNG")
@@ -420,7 +454,10 @@ def cmd_check(args) -> int:
     except Exception as e:
         err = _file_error(args.file, e)
         verdict = {"file": err["path"], "format": None, "is_hdr": None, "peak_nits": None,
-                   "headroom_stops": None, "pass": False, "reasons": [err["error"]]}
+                   "headroom_stops": None, "pass": False, "reasons": [err["error"]],
+                   "status": err.get("status"), "reason": err.get("reason"),
+                   "provider": err.get("provider"),
+                   "provider_version": err.get("provider_version")}
         if getattr(args, "json", False):
             print(_dumps(verdict))
         else:

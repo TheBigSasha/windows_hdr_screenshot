@@ -6,6 +6,8 @@ mapping, no gamut clipping, no quantisation beyond the fp16 the GPU gave us.
 """
 from __future__ import annotations
 
+import importlib.metadata
+
 import numpy as np
 
 
@@ -13,6 +15,20 @@ def available() -> bool:
     """Return whether the optional OpenEXR binding is installed."""
     from ..codecs import capability
     return capability("exr").available
+
+
+def provider_details(profile: str | None = None) -> tuple[str, str | None]:
+    try:
+        import OpenEXR  # pyright: ignore[reportMissingImports]
+        version = getattr(OpenEXR, "__version__", None)
+    except Exception:  # pragma: no cover - optional dependency
+        version = None
+    if version is None:
+        try:
+            version = importlib.metadata.version("OpenEXR")
+        except importlib.metadata.PackageNotFoundError:
+            version = None
+    return "OpenEXR", str(version) if version else None
 
 
 def write_exr(path: str, linear: np.ndarray, sdr_white_nits: float = 80.0) -> None:

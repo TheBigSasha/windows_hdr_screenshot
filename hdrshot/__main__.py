@@ -16,13 +16,15 @@ import argparse
 import json
 import logging
 import sys
+from collections.abc import Mapping
+from typing import Any
 
 from . import __version__
-from .codecs import USER_FORMATS, capabilities_payload
 from .core import pipeline
 from .core.types import virtual_desktop_bounds
 
-FORMATS = list(USER_FORMATS)
+# Keep canonical issue #31 profiles first while accepting every legacy alias.
+FORMATS = list(pipeline.PUBLIC_FORMATS)
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -66,7 +68,7 @@ def cmd_info(args) -> int:
     return 0
 
 
-def _report(info: dict) -> None:
+def _report(info: Mapping[str, Any]) -> None:
     extra = ""
     if "gainmap_max_stops" in info:
         extra = f"  gain map: {info['gainmap_max_stops']} stops"
@@ -116,7 +118,7 @@ def cmd_selftest(args) -> int:
 
 
 def cmd_capabilities(args) -> int:
-    print(json.dumps(capabilities_payload(), indent=2))
+    print(json.dumps(pipeline.capabilities_payload(), indent=2))
     return 0
 
 
@@ -216,8 +218,28 @@ def main(argv=None) -> int:
         logging.getLogger(__name__).debug("command failed", exc_info=True)
         msg = f"{type(e).__name__}: {e}"
         if getattr(args, "json", False):
-            print(json.dumps({"error": {"type": type(e).__name__, "message": str(e)}},
-                             indent=2))
+            error: dict[str, Any] = {"type": type(e).__name__, "message": str(e)}
+            capability = getattr(e, "capability", None)
+            if capability is not None:
+                error.update({
+                    "profile": capability.profile,
+                    "status": capability.status,
+                    "reason": capability.reason,
+                    "provider": capability.provider,
+                    "provider_version": capability.provider_version,
+                })
+            elif isinstance(e, pipeline.CodecEncodeError):
+                error.update({
+                    "profile": e.actual_profile,
+                    "status": e.status,
+                    "reason": e.reason,
+                    "provider": e.provider,
+                    "provider_version": e.provider_version,
+                })
+            else:
+                error.update({"status": None, "reason": None, "provider": None,
+                              "provider_version": None})
+            print(json.dumps({"error": error}, indent=2))
         else:
             print(f"error: {msg}", file=sys.stderr)
         return 3

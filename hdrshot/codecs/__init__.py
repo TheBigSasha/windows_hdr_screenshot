@@ -1,9 +1,10 @@
 """Runtime codec capabilities and strict profile selection."""
 
-from .model import CodecCapability, CodecStatus
+from .model import BundleManifest, CodecCapability, CodecStatus
 from .registry import (
     PROFILES,
     USER_FORMATS,
+    BundleContractError,
     CodecUnavailableError,
     bundle_manifest,
     capabilities,
@@ -16,6 +17,8 @@ from .registry import (
 __all__ = [
     "CodecCapability",
     "CodecStatus",
+    "BundleManifest",
+    "BundleContractError",
     "CodecUnavailableError",
     "PROFILES",
     "USER_FORMATS",

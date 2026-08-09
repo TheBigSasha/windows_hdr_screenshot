@@ -20,6 +20,11 @@ from PIL import Image
 from ..core import color
 
 
+def provider_details(profile: str | None = None) -> tuple[str, str | None]:
+    from .. import __version__
+    return "hdrshot pure-Python UltraHDR", str(__version__)
+
+
 class UltraHDREncodeError(RuntimeError):
     """A structural invariant of the UltraHDR container was violated."""
 

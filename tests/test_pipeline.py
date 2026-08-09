@@ -108,7 +108,7 @@ def _result(fill, white=80.0, hdr_enabled=True):
 
 
 def test_choose_auto_format():
-    assert pipeline.choose_auto_format(_result(8.0)) == "ultrahdr"   # HDR
+    assert pipeline.choose_auto_format(_result(8.0)) == "uhdr-jpeg"   # HDR
     assert pipeline.choose_auto_format(_result(0.5)) == "png"        # SDR
 
 

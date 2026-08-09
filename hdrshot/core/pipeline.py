@@ -9,12 +9,16 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 import numpy as np
 
 from ..backends import get_backend
-from ..codecs import CodecUnavailableError, profile_for_format, require
+from ..codecs import CodecUnavailableError, capability
+from ..codecs.model import CodecCapability, HdrRepresentation
+from ..codecs.registry import capabilities_payload as _registry_capabilities_payload
 from ..encoders import exr, sdr, ultrahdr
 from . import color
 from .types import DisplayInfo, MonitorCapture, virtual_desktop_bounds  # noqa: F401
@@ -23,11 +27,53 @@ log = logging.getLogger(__name__)
 
 # Formats and their file extensions.
 EXT = {
-    "ultrahdr": ".jpg", "exr": ".exr", "heic": ".heic",
-    "png": ".png", "jpeg": ".jpg", "avif": ".avif",
-    "avif-sdr": ".avif", "avif-hdr": ".avif",
+    "uhdr-jpeg": ".jpg", "uhdr-avif": ".avif", "uhdr-heic": ".heic",
+    "pq-avif": ".avif", "pq-heic": ".heic", "exr": ".exr",
+    "png": ".png", "jpeg": ".jpg", "avif-sdr": ".avif",
+    # Legacy aliases are intentionally retained for persisted settings and
+    # callers written before issue #31 defined the canonical profile IDs.
+    "ultrahdr": ".jpg", "avif": ".avif", "heic": ".heic",
+    "avif-hdr": ".avif",
 }
-HDR_FORMATS = {"ultrahdr", "exr", "heic", "avif", "avif-hdr"}
+HDR_FORMATS = {"uhdr-jpeg", "uhdr-avif", "uhdr-heic", "pq-avif", "pq-heic",
+               "exr", "ultrahdr", "heic", "avif", "avif-hdr"}
+
+# Issue #31 names the semantic profile, not just the file container.  The
+# registry still exposes the pre-#31 IDs, so this module owns the compatibility
+# translation until the registry can be migrated without changing its public
+# capability payload.  In particular, ``avif`` remains single-rendition PQ and
+# does not become a gain-map AVIF merely because a future provider is installed.
+CANONICAL_PROFILES = (
+    "uhdr-jpeg", "uhdr-avif", "uhdr-heic", "pq-avif", "pq-heic",
+    "exr", "png", "jpeg", "avif-sdr",
+)
+LEGACY_ALIASES = {
+    "ultrahdr": "uhdr-jpeg",
+    "avif": "pq-avif",
+    "heic": "pq-heic",
+    "avif-hdr": "pq-avif",
+}
+PUBLIC_FORMATS = (
+    "auto", *CANONICAL_PROFILES,
+    # Keep old CLI/config values accepted and document their semantics above.
+    "ultrahdr", "avif", "heic", "avif-hdr",
+)
+_REGISTRY_PROFILES = {profile: profile for profile in CANONICAL_PROFILES}
+_LEGACY_PROFILE_NAMES = {
+    "uhdr-jpeg": "ultrahdr",
+    "pq-avif": "avif",
+    "pq-heic": "heic",
+}
+_REPRESENTATION = {
+    "uhdr-jpeg": "gain_map", "uhdr-avif": "gain_map", "uhdr-heic": "gain_map",
+    "pq-avif": "pq", "pq-heic": "pq", "exr": "linear",
+    "png": "sdr", "jpeg": "sdr", "avif-sdr": "sdr",
+}
+_CONTAINER = {
+    "uhdr-jpeg": "jpeg", "uhdr-avif": "avif", "uhdr-heic": "heic",
+    "pq-avif": "avif", "pq-heic": "heic", "exr": "exr",
+    "png": "png", "jpeg": "jpeg", "avif-sdr": "avif",
+}
 
 
 class RegionError(ValueError):
@@ -35,6 +81,212 @@ class RegionError(ValueError):
 
 
 OptionalDependencyError = CodecUnavailableError
+
+
+class CodecEncodeError(RuntimeError):
+    """A typed failure raised after a selected codec failed to encode.
+
+    ``CodecUnavailableError`` covers capability discovery and selection.  This
+    separate error preserves the selected profile/provider when the native or
+    optional encoder fails during the actual write, allowing CLI/agent callers
+    to handle both cases without parsing exception text.
+    """
+
+    status = "broken"
+
+    def __init__(self, *, requested_profile: str, actual_profile: str,
+                 provider: str | None, provider_version: str | None,
+                 cause: Exception):
+        self.requested_profile = requested_profile
+        self.actual_profile = actual_profile
+        self.provider = provider
+        self.provider_version = provider_version
+        self.reason = f"{type(cause).__name__}: {cause}"
+        super().__init__(
+            f"codec profile {actual_profile!r} provider {provider or 'unknown'!r} "
+            f"failed: {self.reason}")
+
+
+@dataclass(frozen=True)
+class EncodeResult(Mapping[str, Any]):
+    """Structured encode result with a dict-compatible read interface.
+
+    New callers should use the typed fields.  ``Mapping`` behavior and the
+    legacy ``format``/``hdr``/``profile`` keys are deliberate compatibility
+    affordances for existing UI workers and automation integrations.
+    """
+
+    path: str
+    requested_format: str
+    requested_profile: str
+    actual_profile: str
+    legacy_profile: str
+    container: str
+    hdr_representation: str
+    provider: str | None
+    provider_version: str | None
+    encoded_hdr: bool
+    metadata_standard: str | None = None
+    cicp: dict[str, int] | None = None
+    gainmap_max_stops: float | None = None
+    warnings: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "path": self.path,
+            # ``format`` is the historical requested-format key.  The explicit
+            # spelling removes the old alias/profile ambiguity for new clients.
+            "format": self.requested_format,
+            "requested_format": self.requested_format,
+            "profile": self.actual_profile,
+            "requested_profile": self.requested_profile,
+            "actual_profile": self.actual_profile,
+            "legacy_profile": self.legacy_profile,
+            "container": self.container,
+            "hdr_representation": self.hdr_representation,
+            "provider": self.provider,
+            "provider_version": self.provider_version,
+            "hdr": self.encoded_hdr,
+            "encoded_hdr": self.encoded_hdr,
+        }
+        if self.metadata_standard is not None:
+            result["metadata_standard"] = self.metadata_standard
+        if self.cicp is not None:
+            result["cicp"] = dict(self.cicp)
+        if self.gainmap_max_stops is not None:
+            result["gainmap_max_stops"] = self.gainmap_max_stops
+        if self.warnings:
+            result["warnings"] = list(self.warnings)
+        return result
+
+    def __getitem__(self, key: str) -> Any:
+        return self.to_dict()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.to_dict())
+
+    def __len__(self) -> int:
+        return len(self.to_dict())
+
+
+def canonical_profile(fmt: str, hdr_content: bool) -> str:
+    """Return the issue #31 profile for a CLI/config format or legacy alias."""
+    if fmt == "auto":
+        return "uhdr-jpeg" if hdr_content else "png"
+    profile = LEGACY_ALIASES.get(fmt, fmt)
+    if profile not in CANONICAL_PROFILES:
+        raise ValueError(
+            f"unknown format {fmt!r}; valid formats: {', '.join(PUBLIC_FORMATS)}")
+    return profile
+
+
+def _registry_profile(profile: str) -> str:
+    try:
+        return _REGISTRY_PROFILES[profile]
+    except KeyError:
+        # These canonical issue #31 profiles describe future gain-map BMFF
+        # providers; do not map them to the existing PQ encoders.
+        raise KeyError(profile) from None
+
+
+def _unavailable_capability(profile: str) -> CodecCapability:
+    provider = {
+        "uhdr-avif": "libultrahdr",
+        "uhdr-heic": "libultrahdr",
+    }.get(profile)
+    return CodecCapability(
+        profile=profile,
+        available=False,
+        status="excluded",
+        reason=("canonical gain-map profile is not implemented by the current "
+                "providers; issue #31 defines the future libultrahdr path"),
+        hdr_representation=cast(HdrRepresentation, _REPRESENTATION[profile]),
+        provider=provider,
+        provider_version=None,
+    )
+
+
+def _capability(profile: str) -> CodecCapability:
+    """Expose the registry capability under its canonical profile ID."""
+    try:
+        registry_cap = capability(_registry_profile(profile))
+    except KeyError:
+        return _unavailable_capability(profile)
+    return CodecCapability(
+        profile=profile,
+        available=registry_cap.available,
+        status=registry_cap.status,
+        reason=registry_cap.reason,
+        hdr_representation=cast(HdrRepresentation, _REPRESENTATION[profile]),
+        provider=registry_cap.provider,
+        provider_version=registry_cap.provider_version,
+    )
+
+
+def require_profile(profile: str) -> CodecCapability:
+    """Require a canonical profile without allowing representation fallback."""
+    cap = _capability(profile)
+    if not cap.available:
+        raise CodecUnavailableError(cap)
+    return cap
+
+
+def _provider_details(profile: str, cap: CodecCapability) -> tuple[str | None, str | None]:
+    """Return provider identity/version from the encoder, not stale registry data."""
+    modules = {
+        "uhdr-jpeg": ultrahdr,
+        "pq-avif": None,
+        "pq-heic": None,
+        "exr": exr,
+        "png": sdr,
+        "jpeg": sdr,
+        "avif-sdr": sdr,
+    }
+    module = modules.get(profile)
+    if profile == "pq-avif":
+        from ..encoders import avif_hdr
+        module = avif_hdr
+    elif profile == "pq-heic":
+        from ..encoders import heic
+        module = heic
+    if module is not None:
+        details = getattr(module, "provider_details", None)
+        if callable(details):
+            try:
+                details_result = details(profile)
+                if (isinstance(details_result, tuple) and len(details_result) == 2
+                        and isinstance(details_result[0], str)):
+                    return details_result[0], details_result[1]
+            except Exception as exc:  # pragma: no cover - defensive diagnostics
+                log.debug("provider version lookup failed for %s: %s", profile, exc)
+    return cap.provider, cap.provider_version
+
+
+def capabilities_payload() -> dict[str, Any]:
+    """Return the central canonical-profile capability payload."""
+    raw = _registry_capabilities_payload()
+    legacy_rows = {row["profile"]: row for row in raw.get("profiles", [])}
+    profiles: list[dict[str, Any]] = []
+    for profile in CANONICAL_PROFILES:
+        row = dict(legacy_rows.get(profile, _capability(profile).to_dict()))
+        row["profile"] = profile
+        row["legacy_profile"] = _LEGACY_PROFILE_NAMES.get(profile)
+        row["hdr_representation"] = _REPRESENTATION[profile]
+        cap = _capability(profile)
+        provider, version = _provider_details(profile, cap)
+        row["provider"] = provider
+        row["provider_version"] = version
+        profiles.append(row)
+    available = [row["profile"] for row in profiles if row.get("available")]
+    return {
+        "schema_version": 2,
+        "architecture": raw.get("architecture"),
+        "expected_profiles": raw.get("expected_profiles"),
+        "profiles": profiles,
+        "available_profiles": available,
+        "unavailable_profiles": [row for row in profiles if not row.get("available")],
+        "aliases": {**LEGACY_ALIASES, "auto": "uhdr-jpeg or png"},
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -217,61 +469,82 @@ def choose_auto_format(result: CaptureResult) -> str:
     """Pick the best format automatically, macOS-style: gain-map JPEG for HDR,
     PNG for SDR."""
     if result.hdr_capable_content:
-        return "ultrahdr"
+        return "uhdr-jpeg"
     return "png"
 
 
 def resolve_profile(result: CaptureResult, fmt: str) -> str:
-    """Resolve a public format id to one explicit encoder profile."""
-    return profile_for_format(fmt, result.hdr_capable_content)
+    """Resolve a public format id/legacy alias to one canonical profile."""
+    return canonical_profile(fmt, result.hdr_capable_content)
 
 
 def encode(result: CaptureResult, fmt: str, path: str, *,
            gainmap_quality: int | None = None,
-           gainmap_downscale: int | None = None) -> dict:
-    """Encode the result to ``path`` in ``fmt``. Returns info about what was written."""
+           gainmap_downscale: int | None = None) -> EncodeResult:
+    """Encode to ``path`` and return a typed, backward-compatible result."""
     requested_format = fmt
     profile = resolve_profile(result, fmt)
-    cap = require(profile)
+    cap = require_profile(profile)
+    legacy_profile = _LEGACY_PROFILE_NAMES.get(profile, profile)
+    provider, provider_version = _provider_details(profile, cap)
     lin = result.linear
     white = result.sdr_white_nits
-    info = {
-        "format": requested_format,
-        "path": path,
-        "profile": profile,
-        "requested_profile": profile,
-        "actual_profile": profile,
-        "provider": cap.provider,
-        "provider_version": cap.provider_version,
-        "hdr": cap.hdr_representation != "sdr" and result.hdr_capable_content,
-        "encoded_hdr": cap.hdr_representation != "sdr" and result.hdr_capable_content,
-    }
+    encoded_hdr = cap.hdr_representation != "sdr" and result.hdr_capable_content
+    metadata_standard = None
+    cicp = None
+    gainmap_max_stops = None
     log.debug("encoding %s (%s) -> %s (%dx%d)", requested_format, profile, path,
               lin.shape[1], lin.shape[0])
-
-    if profile == "exr":
-        exr.write_exr(path, lin, white)
-    elif profile == "ultrahdr":
-        meta = ultrahdr.write_ultrahdr(
-            path, lin, white,
-            quality=gainmap_quality if gainmap_quality else 90,
-            gainmap_downscale=gainmap_downscale if gainmap_downscale else 1)
-        info["gainmap_max_stops"] = round(meta["gain_max_log2"], 3)
-    elif profile == "heic":
-        from ..encoders import heic
-        heic.write_heic_pq(path, lin)
-    elif profile == "png":
-        sdr.write_png(path, color.scrgb_to_sdr_u8(lin, white))
-    elif profile == "jpeg":
-        sdr.write_jpeg(path, color.scrgb_to_sdr_u8(lin, white))
-    elif profile == "avif-hdr":
-        from ..encoders import avif_hdr
-        avif_hdr.write_avif_pq(path, lin)
-    elif profile == "avif-sdr":
-        sdr.write_avif_sdr(path, color.scrgb_to_sdr_u8(lin, white))
-    else:
-        raise ValueError(f"unknown codec profile {profile!r}")
-    return info
+    try:
+        if profile == "exr":
+            exr.write_exr(path, lin, white)
+        elif profile == "uhdr-jpeg":
+            meta = ultrahdr.write_ultrahdr(
+                path, lin, white,
+                quality=gainmap_quality if gainmap_quality else 90,
+                gainmap_downscale=gainmap_downscale if gainmap_downscale else 1)
+            gainmap_max_stops = round(meta["gain_max_log2"], 3)
+            metadata_standard = "ISO 21496-1 + HDR Gain Map XMP"
+        elif profile == "pq-heic":
+            from ..encoders import heic
+            result_meta = heic.write_heic_pq(path, lin)
+            metadata_standard = "CICP/NCLX"
+            cicp = result_meta.get("cicp") if result_meta else None
+        elif profile == "png":
+            sdr.write_png(path, color.scrgb_to_sdr_u8(lin, white))
+        elif profile == "jpeg":
+            sdr.write_jpeg(path, color.scrgb_to_sdr_u8(lin, white))
+        elif profile == "pq-avif":
+            from ..encoders import avif_hdr
+            result_meta = avif_hdr.write_avif_pq(path, lin)
+            metadata_standard = "CICP/NCLX"
+            cicp = result_meta.get("cicp") if result_meta else None
+        elif profile == "avif-sdr":
+            sdr.write_avif_sdr(path, color.scrgb_to_sdr_u8(lin, white))
+        else:
+            # uhdr-avif and uhdr-heic intentionally have no implementation yet.
+            raise CodecUnavailableError(_unavailable_capability(profile))
+    except CodecUnavailableError:
+        raise
+    except Exception as exc:
+        raise CodecEncodeError(
+            requested_profile=profile, actual_profile=profile,
+            provider=provider, provider_version=provider_version, cause=exc) from exc
+    return EncodeResult(
+        path=path,
+        requested_format=requested_format,
+        requested_profile=profile,
+        actual_profile=profile,
+        legacy_profile=legacy_profile,
+        container=_CONTAINER[profile],
+        hdr_representation=_REPRESENTATION[profile],
+        provider=provider,
+        provider_version=provider_version,
+        encoded_hdr=encoded_hdr,
+        metadata_standard=metadata_standard,
+        cicp=cicp,
+        gainmap_max_stops=gainmap_max_stops,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -281,7 +554,7 @@ def timestamped_name(fmt: str, hdr: bool, when=None) -> str:
     from datetime import datetime
     stamp = (when or datetime.now()).strftime("%Y-%m-%d %H%M%S")
     prefix = "HDR " if hdr else ""
-    return f"{prefix}Screenshot {stamp}{EXT.get(fmt, '.png')}"
+    return f"{prefix}Screenshot {stamp}{EXT.get(fmt, EXT.get(LEGACY_ALIASES.get(fmt, fmt), '.png'))}"
 
 
 TEMPLATE_TOKENS = {"date", "time", "display", "format", "hdr", "n"}
@@ -327,7 +600,7 @@ def render_filename(template: str, fmt: str, hdr: bool, *, display: str = "",
     # Sanitize the whole rendered name: a template with path separators, reserved
     # characters or device names must stay a plain filename inside the save dir.
     body = _sanitize(body) or "Screenshot"
-    return body + EXT.get(fmt, ".png")
+    return body + EXT.get(fmt, EXT.get(LEGACY_ALIASES.get(fmt, fmt), ".png"))
 
 
 def _unique_path(out_dir: str, filename: str) -> str:
@@ -347,18 +620,17 @@ def _unique_path(out_dir: str, filename: str) -> str:
 def save(result: CaptureResult, fmt: str = "auto", out_dir: str | None = None,
          template: str | None = None, *,
          gainmap_quality: int | None = None,
-         gainmap_downscale: int | None = None) -> dict:
+         gainmap_downscale: int | None = None) -> EncodeResult:
     profile = resolve_profile(result, fmt)
-    cap = require(profile)
+    cap = require_profile(profile)
     out_dir = out_dir or default_save_dir()
     os.makedirs(out_dir, exist_ok=True)
     hdr = cap.hdr_representation != "sdr" and result.hdr_capable_content
-    # Use the resolved profile for the filename extension and `{format}` token;
-    # the public alias remains in the JSON as `format`.
+    # Use the canonical profile for the filename extension and `{format}` token;
+    # the original CLI/config spelling remains in `requested_format`/`format`.
     path = _choose_path(out_dir, profile, hdr, result, template)
     info = encode(result, fmt, path,
                   gainmap_quality=gainmap_quality, gainmap_downscale=gainmap_downscale)
-    info["path"] = path
     log.info("saved %s (%s)", path, "HDR" if info.get("hdr") else "SDR")
     return info
 

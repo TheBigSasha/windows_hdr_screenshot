@@ -28,7 +28,7 @@ def _write(tmp_path, fmt, scene):
 def test_parse_ultrahdr(tmp_path, hdr_scene):
     p = _write(tmp_path, "ultrahdr", hdr_scene)
     meta = agentcli.parse_file(p)
-    assert meta["format"] == "ultrahdr"
+    assert meta["format"] == "uhdr-jpeg"
     assert meta["is_hdr"] is True
     assert meta["gainmap_max_stops"] > 0
     assert meta["container"]["mpf"] is True
@@ -58,7 +58,7 @@ def test_parse_missing_file_raises():
 def test_detect_format(tmp_path, hdr_scene, sdr_scene):
     uhdr = _write(tmp_path, "ultrahdr", hdr_scene)
     with open(uhdr, "rb") as f:
-        assert agentcli._detect_format(uhdr, f.read(4096)) == "ultrahdr"
+        assert agentcli._detect_format(uhdr, f.read(4096)) == "uhdr-jpeg"
     plain = _write(tmp_path, "jpeg", sdr_scene)
     with open(plain, "rb") as f:
         assert agentcli._detect_format(plain, f.read(4096)) == "jpeg"
@@ -102,11 +102,11 @@ def test_captures_to_json_shape(hdr_scene):
     res = pipeline.CaptureResult(linear=hdr_scene, sdr_white_nits=480.0, display=disp,
                                  region_phys=(0, 0, 320, 200),
                                  stats=color.hdr_stats(hdr_scene, 480.0))
-    info = {"format": "ultrahdr", "path": "x.jpg", "hdr": True, "gainmap_max_stops": 2.5}
+    info = {"format": "uhdr-jpeg", "path": "x.jpg", "hdr": True, "gainmap_max_stops": 2.5}
     payload = json.loads(agentcli.captures_to_json([(disp, res, info)]))
     assert "captures" in payload and len(payload["captures"]) == 1
     c = payload["captures"][0]
-    assert c["format"] == "ultrahdr"
+    assert c["format"] == "uhdr-jpeg"
     assert c["display"]["gdi_name"] == "A"
     assert "notes" in payload
 

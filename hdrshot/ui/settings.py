@@ -25,10 +25,23 @@ from PySide6.QtWidgets import (
 )
 
 from .. import hotkeys, startup
-from ..codecs import USER_FORMATS, capability
+from ..config import CANONICAL_FORMATS, InvalidFormatError, validate_format
 from ..core import pipeline
 
-FORMATS = list(USER_FORMATS)
+FORMATS = list(CANONICAL_FORMATS)
+
+FORMAT_LABELS = {
+    "auto": "Auto",
+    "uhdr-jpeg": "UltraHDR JPEG",
+    "uhdr-avif": "UltraHDR AVIF",
+    "uhdr-heic": "UltraHDR HEIC",
+    "pq-avif": "AVIF (PQ)",
+    "pq-heic": "HEIC (PQ)",
+    "exr": "OpenEXR",
+    "png": "PNG",
+    "jpeg": "JPEG",
+    "avif-sdr": "AVIF (SDR)",
+}
 
 
 class PreferencesDialog(QDialog):
@@ -48,16 +61,18 @@ class PreferencesDialog(QDialog):
 
         self.fmt = QComboBox()
         for fmt in FORMATS:
-            self.fmt.addItem(fmt)
-            if fmt in {"auto", "avif"}:
-                continue
-            cap = capability(fmt)
-            if not cap.available:
+            self.fmt.addItem(FORMAT_LABELS.get(fmt, fmt), fmt)
+            checked = validate_format(fmt, allow_legacy=False)
+            if not checked.available:
                 idx = self.fmt.count() - 1
                 self.fmt.model().item(idx).setEnabled(False)
-                self.fmt.setItemData(idx, cap.reason or cap.status, Qt.ToolTipRole)
-        self.fmt.setCurrentText(self.config.get("default_format"))
+                self.fmt.setItemData(idx, checked.message(), Qt.ToolTipRole)
+        self._select_saved_format()
+        self.fmt.currentIndexChanged.connect(self._update_format_state)
         form.addRow("Default format", self.fmt)
+        self.format_hint = QLabel("")
+        self.format_hint.setObjectName("subtle")
+        form.addRow("", self.format_hint)
 
         self.save_dir = QLineEdit(self.config.get("save_dir"))
         self.save_dir.setPlaceholderText("(default: Pictures\\Screenshots)")
@@ -109,7 +124,34 @@ class PreferencesDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
+        self._save_button = buttons.button(QDialogButtonBox.Save)
         root.addWidget(buttons)
+        self._update_format_state()
+
+    def _select_saved_format(self):
+        checked = self.config.format_validation()
+        if checked.valid and checked.canonical:
+            for index in range(self.fmt.count()):
+                if self.fmt.itemData(index) == checked.canonical:
+                    # Deliberately select an unavailable saved profile too.  It
+                    # must remain visible rather than becoming Auto or item 0.
+                    self.fmt.setCurrentIndex(index)
+                    break
+        elif checked.value is not None:
+            self.fmt.addItem(f"Invalid saved value: {checked.value}", checked.value)
+            index = self.fmt.count() - 1
+            self.fmt.model().item(index).setEnabled(False)
+            self.fmt.setItemData(index, checked.message(), Qt.ToolTipRole)
+            self.fmt.setCurrentIndex(index)
+
+    def _update_format_state(self):
+        checked = validate_format(self.fmt.currentData(), allow_legacy=False)
+        if checked.selectable:
+            self.format_hint.setText("")
+            self._save_button.setEnabled(True)
+        else:
+            self.format_hint.setText(checked.message())
+            self._save_button.setEnabled(False)
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "Choose save folder", self.save_dir.text())
@@ -118,6 +160,10 @@ class PreferencesDialog(QDialog):
 
     def _save(self):
         # Validate the template + hotkeys before persisting.
+        checked = validate_format(self.fmt.currentData(), allow_legacy=False)
+        if not checked.valid or not checked.selectable:
+            QMessageBox.warning(self, "Unavailable default format", checked.message())
+            return
         try:
             pipeline.validate_template(self.template.text())
         except ValueError as e:
@@ -131,7 +177,11 @@ class PreferencesDialog(QDialog):
                 return
 
         c = self.config
-        c.set("default_format", self.fmt.currentText())
+        try:
+            c.set("default_format", checked.canonical)
+        except InvalidFormatError as e:
+            QMessageBox.warning(self, "Invalid default format", e.validation.message())
+            return
         c.set("save_dir", self.save_dir.text().strip())
         c.set("filename_template", self.template.text())
         c.set("hotkey_region", self.hk_region.text())

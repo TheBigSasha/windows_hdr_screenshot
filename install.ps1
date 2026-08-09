@@ -36,6 +36,7 @@ try {
     if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw "Latest release has invalid tag '$tag'." }
     $version = $tag.Substring(1)
     $assetName = "HDRShot-$version-$assetSuffix.zip"
+    $expectedArchitecture = if ($assetSuffix -eq "win-arm64") { "arm64" } else { "x64" }
     $asset = @($release.assets | Where-Object { $_.name -eq $assetName }) | Select-Object -First 1
     if (-not $asset) { throw "Release $tag has no exact asset '$assetName'." }
 
@@ -77,8 +78,15 @@ try {
                 throw "$([IO.Path]::GetFileName($exe)) has the wrong PE architecture."
             }
         }
-        if (-not (Test-Path -LiteralPath (Join-Path $bundle "bundle-capabilities.json"))) {
+        $manifestPath = Join-Path $bundle "bundle-capabilities.json"
+        if (-not (Test-Path -LiteralPath $manifestPath)) {
             throw "Archive is missing its capability contract."
+        }
+        $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+        if ($manifest.schema_version -ne 1 -or
+            [string]$manifest.architecture -cne $expectedArchitecture -or
+            @($manifest.expected_profiles).Count -eq 0) {
+            throw "Archive has an invalid capability contract."
         }
 
         # Copy into a sibling directory. No existing install is touched until the
@@ -86,12 +94,18 @@ try {
         Copy-Item -LiteralPath $bundle -Destination $stage -Recurse -Force
         $stageCli = Join-Path $stage "hdrshot-cli.exe"
         $reportedVersion = (& $stageCli --version | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0 -or $reportedVersion -notmatch [regex]::Escape($version)) {
-            throw "Staged CLI version mismatch: $reportedVersion"
+        if ($LASTEXITCODE -ne 0 -or $reportedVersion -cne "hdrshot $version") {
+            throw "Staged CLI version mismatch: expected 'hdrshot $version', got '$reportedVersion'"
         }
         $caps = (& $stageCli capabilities --json | ConvertFrom-Json)
         if ($LASTEXITCODE -ne 0 -or -not $caps.available_profiles) {
             throw "Staged capability contract could not be read."
+        }
+        $manifestProfiles = @($manifest.expected_profiles | Sort-Object) -join ","
+        $reportedProfiles = @($caps.expected_profiles | Sort-Object) -join ","
+        $availableProfiles = @($caps.available_profiles | Sort-Object) -join ","
+        if ($manifestProfiles -cne $reportedProfiles -or $reportedProfiles -cne $availableProfiles) {
+            throw "Staged capability contract disagrees with the executable."
         }
         $smoke = Join-Path $tempRoot "selftest"
         & $stageCli selftest --out $smoke
