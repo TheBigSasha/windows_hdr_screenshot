@@ -41,7 +41,9 @@ one exact asset name from the release tag and architecture, verifies the ZIP
 digest, validates both PE headers and the capability contract, runs CLI
 self-tests from a staged directory, then swaps the staged tree into place. A
 failed swap restores the previous tree; the previous version is retained for
-rollback after success.
+rollback after success. The per-user Start Menu shortcut is written to
+`%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\HDR Shot.lnk` and its
+target is verified in the native x64 and ARM64 release jobs.
 
 The installer is intentionally not advertised as a working command until a
 tagged release exists. It does not execute a mutable remote script internally.
