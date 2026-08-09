@@ -254,17 +254,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $owner, $repoName = $env:GITHUB_REPOSITORY.Split('/')
-          $query = 'query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { releases(first: 100, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { databaseId tagName isDraft } } } }'
-          $listJson = gh api graphql -F owner=$owner -F name=$repoName -f query=$query
+          $listJson = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100"
           if ($LASTEXITCODE -ne 0) { throw "could not list releases for $tag" }
-          $listed = ($listJson | ConvertFrom-Json).data.repository.releases.nodes
-          $existing = @($listed | Where-Object { $_.tagName -ceq $tag })
+          $listed = $listJson | ConvertFrom-Json
+          $existing = @($listed | Where-Object { $_.tag_name -ceq $tag })
           if ($existing.Count -gt 1) { throw "multiple releases exist for $tag" }
           if ($existing.Count -eq 1) {
             $candidate = $existing[0]
-            if (-not [bool]$candidate.isDraft) { throw "release $tag is already published" }
-            gh api --method DELETE "repos/$env:GITHUB_REPOSITORY/releases/$($candidate.databaseId)"
+            if (-not [bool]$candidate.draft) { throw "release $tag is already published" }
+            gh api --method DELETE "repos/$env:GITHUB_REPOSITORY/releases/$($candidate.id)"
             if ($LASTEXITCODE -ne 0) { throw "could not remove stale draft release $tag" }
           }
 
@@ -330,16 +328,14 @@ jobs:
           $version = $tag.Substring(1)
           $dir = Join-Path $PWD draft-verification
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
-          $owner, $repoName = $env:GITHUB_REPOSITORY.Split('/')
-          $query = 'query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { releases(first: 100, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { databaseId tagName isDraft } } } }'
-          $listJson = gh api graphql -F owner=$owner -F name=$repoName -f query=$query
+          $listJson = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100"
           if ($LASTEXITCODE -ne 0) { throw "could not list releases for $tag" }
-          $listed = ($listJson | ConvertFrom-Json).data.repository.releases.nodes
-          $matches = @($listed | Where-Object { $_.tagName -ceq $tag })
+          $listed = $listJson | ConvertFrom-Json
+          $matches = @($listed | Where-Object { $_.tag_name -ceq $tag })
           if ($matches.Count -ne 1) { throw "draft release $tag was not found" }
           $releaseInfo = $matches[0]
-          if (-not [bool]$releaseInfo.isDraft) { throw "release $tag is not a draft" }
-          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/$($releaseInfo.databaseId)"
+          if (-not [bool]$releaseInfo.draft) { throw "release $tag is not a draft" }
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/$($releaseInfo.id)"
           if ($LASTEXITCODE -ne 0) { throw "could not fetch draft release $tag by ID" }
           $release = $releaseJson | ConvertFrom-Json
 
@@ -373,16 +369,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $owner, $repoName = $env:GITHUB_REPOSITORY.Split('/')
-          $query = 'query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { releases(first: 100, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { databaseId tagName isDraft } } } }'
-          $listJson = gh api graphql -F owner=$owner -F name=$repoName -f query=$query
+          $listJson = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100"
           if ($LASTEXITCODE -ne 0) { throw "could not list releases for $tag" }
-          $listed = ($listJson | ConvertFrom-Json).data.repository.releases.nodes
-          $matches = @($listed | Where-Object { $_.tagName -ceq $tag })
+          $listed = $listJson | ConvertFrom-Json
+          $matches = @($listed | Where-Object { $_.tag_name -ceq $tag })
           if ($matches.Count -ne 1) { throw "draft release $tag was not found" }
           $releaseInfo = $matches[0]
-          if (-not [bool]$releaseInfo.isDraft) { throw "release $tag is already public" }
-          gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$($releaseInfo.databaseId)" -F draft=false
+          if (-not [bool]$releaseInfo.draft) { throw "release $tag is already public" }
+          gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$($releaseInfo.id)" -F draft=false
           if ($LASTEXITCODE -ne 0) { throw "could not publish release $tag" }
 
       - name: Re-download and verify public release hashes
