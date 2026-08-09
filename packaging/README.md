@@ -14,7 +14,9 @@ tag/source identity + reusable quality suite
 ```
 
 The onedir bundle contains a windowed `HDRShot.exe` and a console
-`hdrshot-cli.exe` over one shared runtime. The frozen
+`hdrshot-cli.exe` over one shared runtime. Each release also includes a native
+per-user `HDRShot-<version>-<arch>-setup.exe` installer that stages, validates,
+and installs the same bundle while creating a Start Menu shortcut. The frozen
 `bundle-capabilities.json` contract intentionally advertises UltraHDR, PNG,
 and JPEG only; optional codec providers are excluded explicitly in the spec.
 The artifact's capability command and self-test must agree with that manifest.

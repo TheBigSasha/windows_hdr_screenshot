@@ -30,8 +30,9 @@ ARM64 builds pass clean extracted-ZIP verification. Until a verified release is
 available, use the source workflow below. This keeps a missing `/releases/latest`
 endpoint from being presented as a working installer.
 
-Each release contains `HDRShot.exe`, `hdrshot-cli.exe`, an exact capability
-contract, SHA-256 files, a dependency SBOM, and build provenance. The reviewed
+Each release contains architecture-specific `HDRShot-<version>-<arch>-setup.exe`
+installers plus the underlying `HDRShot.exe`/`hdrshot-cli.exe` bundles, exact
+capability contracts, SHA-256 files, dependency SBOMs, and build provenance. The reviewed
 `install.ps1` accepts an explicit `-InstallDir`, stages and validates a new
 version, then swaps it transactionally while retaining the previous version for
 rollback.
