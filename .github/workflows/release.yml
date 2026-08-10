@@ -349,7 +349,13 @@ jobs:
           $dir = Join-Path $PWD draft-verification
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
           $releaseId = (Get-Content -LiteralPath draft-release/draft-release-id.txt -Raw).Trim()
-          if ($releaseId -notmatch '^[0-9]+
+          if ($releaseId -notmatch '^[0-9]+$') { throw "invalid draft release ID" }
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/$releaseId"
+          if ($LASTEXITCODE -ne 0) { throw "could not fetch draft release $tag by ID" }
+          $release = $releaseJson | ConvertFrom-Json
+          if (-not [bool]$release.draft) { throw "release $tag is not a draft" }
+
+          function Download-Asset([string] $Name) {
             $asset = @($release.assets | Where-Object { $_.name -ceq $Name })
             if ($asset.Count -ne 1) { throw "expected exactly one draft asset named $Name" }
             $destination = Join-Path $dir $Name
