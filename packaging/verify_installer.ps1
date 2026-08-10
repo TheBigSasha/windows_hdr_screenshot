@@ -47,8 +47,8 @@ if ($match.Groups["hash"].Value.ToLowerInvariant() -cne $actual) {
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $installDir = Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) "installed"
-& $installerPath --install-dir $installDir --no-launch
-if ($LASTEXITCODE -ne 0) { throw "installer exited with code $LASTEXITCODE" }
+$installerProcess = Start-Process -FilePath $installerPath -ArgumentList @("--install-dir", $installDir, "--no-launch") -Wait -PassThru
+if ($installerProcess.ExitCode -ne 0) { throw "installer exited with code $($installerProcess.ExitCode)" }
 
 $gui = Join-Path $installDir "HDRShot.exe"
 $cli = Join-Path $installDir "hdrshot-cli.exe"
