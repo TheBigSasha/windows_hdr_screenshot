@@ -359,7 +359,12 @@ jobs:
             $asset = @($release.assets | Where-Object { $_.name -ceq $Name })
             if ($asset.Count -ne 1) { throw "expected exactly one draft asset named $Name" }
             $destination = Join-Path $dir $Name
-            gh api $asset[0].url -H "Accept: application/octet-stream" --output $destination
+            $headers = @{
+              Accept = "application/octet-stream"
+              Authorization = "Bearer $env:GH_TOKEN"
+              "X-GitHub-Api-Version" = "2022-11-28"
+            }
+            Invoke-WebRequest -UseBasicParsing -Uri $asset[0].url -Headers $headers -OutFile $destination
             if ($LASTEXITCODE -ne 0) { throw "could not download draft asset $Name" }
           }
 
