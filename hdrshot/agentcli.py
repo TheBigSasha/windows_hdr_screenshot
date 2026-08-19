@@ -293,22 +293,30 @@ def _detect_format(path: str, head: bytes) -> str:
     if ext in (".heic", ".heif"):
         return "pq-heic"
     if ext == ".avif":
-        nclx = _scan_avif_nclx(head)
-        return "pq-avif" if nclx is not None and nclx[1] == 16 else "avif-sdr"
+        avif = _inspect_avif(head)
+        if avif and avif.get("hdr_representation") == "gain_map":
+            return "uhdr-avif"
+        return "pq-avif" if avif and avif.get("hdr_representation") == "pq" else "avif-sdr"
     if ext == ".png":
         return "png"
     # Fall back to magic sniffing.
+    avif = _inspect_avif(head)
+    if avif:
+        if avif.get("hdr_representation") == "gain_map":
+            return "uhdr-avif"
+        return "pq-avif" if avif.get("hdr_representation") == "pq" else "avif-sdr"
     if b"ftypheic" in head or b"ftypmif1" in head:
         return "pq-heic"
-    if b"ftypavif" in head:
-        nclx = _scan_avif_nclx(head)
-        return "pq-avif" if nclx is not None and nclx[1] == 16 else "avif-sdr"
     return "jpeg"
 
 
 def parse_file(path: str) -> dict:
     if not os.path.exists(path):
         raise FileNotFoundError(path)
+    if os.path.splitext(path)[1].lower() == ".avif":
+        from .encoders.avif_container import MAX_FILE_BYTES
+        if os.path.getsize(path) > MAX_FILE_BYTES:
+            raise ValueError(f"AVIF exceeds the {MAX_FILE_BYTES}-byte parser limit")
     with open(path, "rb") as fp:
         data = fp.read()
     fmt = _detect_format(path, data)
@@ -320,7 +328,7 @@ def parse_file(path: str) -> dict:
             result = _parse_exr(path)
         elif fmt == "pq-heic":
             result = _parse_heif(path, "pq-heic")
-        elif fmt in ("pq-avif", "avif-sdr"):
+        elif fmt in ("uhdr-avif", "pq-avif", "avif-sdr"):
             result = _parse_avif(path, data)
         else:
             result = _parse_generic_sdr(path, fmt)
@@ -338,57 +346,62 @@ def parse_file(path: str) -> dict:
 
 
 def _parse_avif(path: str, data: bytes) -> dict:
-    # Prefer imagecodecs (exposes the real bit depth / nclx); fall back to Pillow.
+    meta = _inspect_avif(data)
+    if meta is None:
+        return _parse_generic_sdr(path, "avif-sdr")
+    representation = meta.get("hdr_representation")
+    fmt = "uhdr-avif" if representation == "gain_map" else (
+        "pq-avif" if representation == "pq" else "avif-sdr"
+    )
+    tc = meta.get("transfer_characteristics")
+    cp = meta.get("color_primaries")
+    return {
+        "format": fmt,
+        "is_hdr": meta.get("is_hdr"),
+        "hdr_representation": representation,
+        "metadata_standard": meta.get("metadata_standard"),
+        "metadata_present": bool(
+            meta.get("gainmap_metadata_present") or tc is not None
+        ),
+        "metadata_valid": (
+            meta.get("gainmap_metadata_valid") if representation == "gain_map" else tc is not None
+        ),
+        "bit_depth": meta.get("bit_depth"),
+        "transfer_characteristics": tc,
+        "transfer_name": _name(_TC_NAMES, tc),
+        "color_primaries": cp,
+        "primaries_name": _name(_CP_NAMES, cp),
+        "matrix_coefficients": meta.get("matrix_coefficients"),
+        "full_range_flag": meta.get("full_range_flag"),
+        "chroma_format": meta.get("chroma_format"),
+        "width": meta.get("width"),
+        "height": meta.get("height"),
+        "measurement_source": meta.get("measurement_source"),
+        "viewer_compatibility": meta.get("viewer_compatibility"),
+        "note": "bounded primary-item container metadata; pixels were not decoded",
+    }
+
+
+def _inspect_avif(data: bytes) -> dict | None:
+    from .encoders.avif_container import AvifContainerError, inspect_avif
     try:
-        from .encoders import avif_hdr
-        if avif_hdr.available():
-            meta = avif_hdr.probe(path)
-            if meta:
-                tc = meta.get("transfer_characteristics")
-                cp = meta.get("color_primaries")
-                return {
-                    "format": "pq-avif" if tc == 16 or (meta.get("bit_depth", 8) >= 10) else "avif-sdr",
-                    "is_hdr": bool(tc == 16 or (meta.get("bit_depth", 8) >= 10)),
-                    "bit_depth": meta.get("bit_depth"),
-                    "transfer_characteristics": tc,
-                    "transfer_name": _name(_TC_NAMES, tc),
-                    "color_primaries": cp,
-                    "primaries_name": _name(_CP_NAMES, cp),
-                    "matrix_coefficients": meta.get("matrix_coefficients"),
-                    "full_range_flag": meta.get("full_range_flag"),
-                    "width": meta.get("width"), "height": meta.get("height"),
-                }
-    except Exception as e:  # pragma: no cover - best-effort probe
-        log.debug("imagecodecs AVIF probe failed: %s", e)
-    # No imagecodecs: read the nclx colr box straight from the container so a
-    # 10-bit PQ HDR AVIF is not misreported as SDR on a base install.
-    nclx = _scan_avif_nclx(data)
-    if nclx is not None:
-        cp, tc, mc, full_range = nclx
-        out = {
-            "format": "pq-avif" if tc == 16 else "avif-sdr",
-            "is_hdr": bool(tc == 16),
-            "transfer_characteristics": tc,
-            "transfer_name": _name(_TC_NAMES, tc),
-            "color_primaries": cp,
-            "primaries_name": _name(_CP_NAMES, cp),
-            "matrix_coefficients": mc,
-            "full_range_flag": full_range,
-            "note": "container-level nclx probe (install hdrshot[avif-hdr] for bit depth)",
-        }
-        return out
-    return _parse_generic_sdr(path, "avif-sdr")
+        return inspect_avif(data)
+    except AvifContainerError:
+        return None
 
 
 def _scan_avif_nclx(data: bytes) -> tuple[int, int, int, int] | None:
-    """Find the first ISOBMFF ``colr`` box with an ``nclx`` profile and return
-    (primaries, transfer, matrix, full-range flag), or None."""
-    idx = data.find(b"colrnclx")
-    if idx < 0 or idx + 15 > len(data):
+    """Return primary-item NCLX as (primaries, transfer, matrix, full-range)."""
+    meta = _inspect_avif(data)
+    if meta is None:
         return None
-    import struct
-    cp, tc, mc = struct.unpack(">HHH", data[idx + 8: idx + 14])
-    return cp, tc, mc, data[idx + 14] & 1
+    values = tuple(meta.get(field) for field in (
+        "color_primaries", "transfer_characteristics",
+        "matrix_coefficients", "full_range_flag",
+    ))
+    if any(value is None for value in values):
+        return None
+    return tuple(int(value) for value in values)  # type: ignore[return-value]
 
 
 # --------------------------------------------------------------------------- #

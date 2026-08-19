@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import importlib.metadata
-import struct
 
 import numpy as np
 
 from ..core import color
+from .avif_container import MAX_FILE_BYTES, AvifContainerError, inspect_avif
 
 CP_BT2020 = 9
 TC_PQ = 16
@@ -43,15 +43,18 @@ def write_avif_pq(path: str, linear: np.ndarray, quality: int = 90) -> dict:
     import imagecodecs  # pyright: ignore[reportMissingImports]
 
     pq10 = color.scrgb_to_pq_bt2020_u16(linear, bit_depth=10)
-    encoded = imagecodecs.avif_encode(
+    encoded = bytes(imagecodecs.avif_encode(
         np.ascontiguousarray(pq10),
         level=max(0, min(100, quality)),
         bitspersample=10,
+        # Screenshot text and one-pixel UI edges need full chroma resolution.
+        # imagecodecs/libavif treats this RGB input as full range; the emitted
+        # primary-item CICP contract is verified below before anything is saved.
         pixelformat="yuv444",
         primaries=CP_BT2020,
         transfer=TC_PQ,
         matrix=MC_BT2020_NCL,
-    )
+    ))
     cicp = _assert_cicp(encoded)
     with open(path, "wb") as fp:
         fp.write(encoded)
@@ -59,33 +62,30 @@ def write_avif_pq(path: str, linear: np.ndarray, quality: int = 90) -> dict:
 
 
 def probe(path: str) -> dict | None:
-    """Return decoded dimensions and the AVIF nclx colour profile."""
+    """Return bounded primary-item AVIF metadata without native decoding."""
     try:
-        import imagecodecs  # pyright: ignore[reportMissingImports]
         with open(path, "rb") as fp:
-            data = fp.read()
-        arr = np.asarray(imagecodecs.avif_decode(data))
-    except Exception:
+            data = fp.read(MAX_FILE_BYTES + 1)
+        return inspect_avif(data)
+    except (OSError, AvifContainerError):
         return None
-    bit_depth = 10 if arr.dtype == np.uint16 else 8
-    h, w = arr.shape[:2]
-    nclx = _read_nclx(data)
-    out = {"bit_depth": bit_depth, "width": int(w), "height": int(h),
-           "transfer_characteristics": None, "color_primaries": None,
-           "matrix_coefficients": None, "full_range_flag": None}
-    if nclx:
-        out.update(nclx)
-    return out
 
 
 def _read_nclx(data: bytes) -> dict[str, int] | None:
-    """Parse an ISO-BMFF ``colr`` box carrying an ``nclx`` profile."""
-    i = data.find(b"nclx")
-    if i == -1 or i + 12 > len(data):
+    """Return only the ``nclx`` property associated with the primary item."""
+    try:
+        metadata = inspect_avif(data)
+    except AvifContainerError:
         return None
-    cp, tc, mc = struct.unpack_from(">HHH", data, i + 4)
-    return {"color_primaries": cp, "transfer_characteristics": tc,
-            "matrix_coefficients": mc, "full_range_flag": data[i + 10] & 1}
+    fields = (
+        "color_primaries",
+        "transfer_characteristics",
+        "matrix_coefficients",
+        "full_range_flag",
+    )
+    if any(metadata.get(field) is None for field in fields):
+        return None
+    return {field: int(metadata[field]) for field in fields}
 
 
 def _assert_cicp(data: bytes) -> dict[str, int]:

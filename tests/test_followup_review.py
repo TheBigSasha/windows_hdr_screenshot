@@ -30,6 +30,8 @@ from hdrshot.core import color, pipeline
 from hdrshot.core.pipeline import CodecEncodeError
 from hdrshot.encoders import avif_hdr, heic
 
+from .avif_fixtures import make_avif
+
 
 def _cap(profile: str, *, available: bool, status: str,
          reason: str | None = None) -> CodecCapability:
@@ -326,11 +328,11 @@ def test_avif_hdr_provider_without_nclx_arguments_is_broken_not_skipped(monkeypa
 
     assert cap.available is False
     assert cap.status == "broken"
-    assert "nclx profile arguments" in (cap.reason or "")
+    assert "required HDR" in (cap.reason or "")
 
 
 def test_avif_hdr_provider_with_nclx_arguments_is_available_without_skip(monkeypatch):
-    def avif_encode(pixels, *, primaries, transfer, matrix):
+    def avif_encode(pixels, *, bitspersample, pixelformat, primaries, transfer, matrix):
         return b"avif"
 
     module = SimpleNamespace(
@@ -385,7 +387,7 @@ def test_avif_writer_passes_all_cicp_fields(monkeypatch, tmp_path):
 
     def avif_encode(pixels, **kwargs):
         seen.update(kwargs)
-        return b"nclx" + struct.pack(">HHH", 9, 16, 9) + b"\x01\x00"
+        return make_avif()
 
     monkeypatch.setitem(sys.modules, "imagecodecs", SimpleNamespace(avif_encode=avif_encode))
     result = avif_hdr.write_avif_pq(
@@ -405,7 +407,7 @@ def test_avif_writer_passes_all_cicp_fields(monkeypatch, tmp_path):
 
 
 def test_avif_nclx_probe_preserves_all_cicp_fields():
-    encoded = b"nclx" + struct.pack(">HHH", 9, 16, 9) + b"\x01\x00"
+    encoded = make_avif()
     assert avif_hdr._read_nclx(encoded) == {
         "color_primaries": 9,
         "transfer_characteristics": 16,
@@ -413,13 +415,13 @@ def test_avif_nclx_probe_preserves_all_cicp_fields():
         "full_range_flag": 1,
     }
 
-    data = b"prefixcolrnclx" + struct.pack(">HHH", 9, 16, 9) + b"\x01suffix"
+    data = make_avif()
     assert agentcli._scan_avif_nclx(data) == (9, 16, 9, 1)
 
 
 def test_avif_parse_fallback_reports_complete_cicp_fields(monkeypatch, tmp_path):
     monkeypatch.setattr(avif_hdr, "available", lambda: False)
-    data = b"prefixcolrnclx" + struct.pack(">HHH", 9, 16, 9) + b"\x01suffix"
+    data = make_avif()
     path = tmp_path / "capture.avif"
     path.write_bytes(data)
 

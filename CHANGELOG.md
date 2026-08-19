@@ -6,6 +6,16 @@ All notable changes to HDR Shot are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- Correct AVIF NCLX full-range parsing (the flag is the high bit), retain 4:4:4
+  chroma for screenshot sharpness, and verify 10-bit PQ values numerically on
+  the native imagecodecs/libavif path.
+- Replace raw AVIF marker searches with bounded primary-item ISO-BMFF parsing;
+  distinguish 10-bit SDR, single-rendition PQ, and structurally valid ISO
+  21496-1 gain-map AVIF metadata without inferring viewer compatibility.
+- Require the first imagecodecs release that actually exposes AVIF CICP/NCLX
+  controls (`2025.11.11`) and report both package and libavif versions.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added
