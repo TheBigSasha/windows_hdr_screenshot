@@ -6,6 +6,15 @@ All notable changes to HDR Shot are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-08-18
+
+### Changed
+- Render HDR captures in the preview with a GPU-uploaded RGBA16F
+  BT.2100/PQ surface instead of reducing the preview to 8-bit SDR first.
+- Keep clipboard and save-completion preview copies as SDR for predictable
+  Windows interoperability, with an automatic SDR fallback if the HDR surface
+  cannot be created by the installed Qt/driver stack.
+
 ## [0.4.4] - 2026-08-18
 
 ### Fixed
