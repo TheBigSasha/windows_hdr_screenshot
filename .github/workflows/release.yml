@@ -413,7 +413,7 @@ jobs:
           $version = $env:GITHUB_REF_NAME.Substring(1)
           $dir = Join-Path $PWD published-verification
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
-          gh release download $env:GITHUB_REF_NAME --dir $dir --pattern "HDRShot-$version-win64.zip" --pattern "HDRShot-$version-win64.zip.sha256" --pattern "HDRShot-$version-win-arm64.zip" --pattern "HDRShot-$version-win-arm64.zip.sha256" --pattern "HDRShot-$version-win64-setup.exe" --pattern "HDRShot-$version-win64-setup.exe.sha256" --pattern "HDRShot-$version-win-arm64-setup.exe" --pattern "HDRShot-$version-win-arm64-setup.exe.sha256"
+          gh release download $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --dir $dir --pattern "HDRShot-$version-win64.zip" --pattern "HDRShot-$version-win64.zip.sha256" --pattern "HDRShot-$version-win-arm64.zip" --pattern "HDRShot-$version-win-arm64.zip.sha256" --pattern "HDRShot-$version-win64-setup.exe" --pattern "HDRShot-$version-win64-setup.exe.sha256" --pattern "HDRShot-$version-win-arm64-setup.exe" --pattern "HDRShot-$version-win-arm64-setup.exe.sha256"
           $files = @(
             Get-ChildItem $dir -File -Filter "HDRShot-$version-win64.zip"
             Get-ChildItem $dir -File -Filter "HDRShot-$version-win-arm64.zip"
