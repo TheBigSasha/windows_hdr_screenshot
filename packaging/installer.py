@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -93,6 +94,40 @@ def _create_start_menu_shortcut(gui: Path, install_dir: Path) -> None:
         print(f"warning: could not create Start Menu shortcut: {result.stderr.strip()}", file=sys.stderr)
 
 
+def _stop_running_gui(target: Path) -> None:
+    """Stop only the installed GUI at ``target`` so an upgrade can swap files.
+
+    A tray-resident Qt process keeps DLLs mapped on Windows. Match the fully
+    resolved executable path before stopping anything; another program that
+    happens to use the same process name is never touched.
+    """
+    gui = (target / "HDRShot.exe").resolve()
+    if not gui.is_file():
+        return
+    script = (
+        f"$target=[IO.Path]::GetFullPath({_ps_quote(gui)});"
+        "$apps=@(Get-Process HDRShot -ErrorAction SilentlyContinue | Where-Object {"
+        "$_.Path -and [IO.Path]::GetFullPath($_.Path) -ceq $target});"
+        "if($apps.Count -gt 0){$apps | Stop-Process -Force;"
+        "$apps | Wait-Process -Timeout 10 -ErrorAction Stop}"
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True,
+        text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode:
+        details = (result.stdout + "\n" + result.stderr).strip()
+        raise RuntimeError(f"could not close the running HDR Shot app: {details}")
+
+
+def _message_box(text: str, title: str, flags: int) -> int:
+    if sys.platform != "win32":
+        return 1
+    return int(ctypes.windll.user32.MessageBoxW(None, text, title, flags))
+
+
 def _validate_bundle(bundle: Path, version: str, architecture: str, work: Path) -> tuple[Path, Path]:
     expected_machine = 0xAA64 if architecture == "arm64" else 0x8664
     gui = bundle / "HDRShot.exe"
@@ -150,6 +185,7 @@ def install(install_dir: Path | None, no_launch: bool) -> int:
         bundle = extracted / "HDRShot"
         gui, _ = _validate_bundle(bundle, version, architecture, temp_root)
         shutil.copytree(bundle, stage)
+        _stop_running_gui(target)
         if target.exists():
             if not target.is_dir():
                 raise RuntimeError(f"install target is not a directory: {target}")
@@ -177,10 +213,25 @@ def main() -> int:
     parser.add_argument("--install-dir", type=Path, help="per-user destination directory")
     parser.add_argument("--no-launch", action="store_true", help="do not start HDR Shot after installation")
     args = parser.parse_args()
+    interactive = args.install_dir is None and not args.no_launch
+    if interactive and _message_box(
+            "Install or upgrade native HDR Shot for this PC?\n\n"
+            "The running HDR Shot app will close automatically.",
+            "HDR Shot Setup", 0x00000001 | 0x00000040) != 1:  # OK/Cancel + information
+        return 0
     try:
-        return install(args.install_dir, args.no_launch)
+        result = install(args.install_dir, args.no_launch)
+        if interactive:
+            _message_box(
+                "HDR Shot was installed successfully.\n\n"
+                "It is opening now and will stay resident for instant hotkeys.",
+                "HDR Shot Setup", 0x00000000 | 0x00000040,
+            )
+        return result
     except Exception as exc:
         print(f"HDR Shot installer failed: {exc}", file=sys.stderr)
+        if interactive:
+            _message_box(str(exc), "HDR Shot Setup failed", 0x00000000 | 0x00000010)
         return 1
 
 

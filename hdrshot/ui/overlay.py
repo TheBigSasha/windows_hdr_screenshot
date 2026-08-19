@@ -16,8 +16,8 @@ from __future__ import annotations
 import sys
 
 import numpy as np
-from PySide6.QtCore import QObject, QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+from PySide6.QtCore import QObject, QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from ..core import color
@@ -34,6 +34,14 @@ def _qimage_from_rgb(arr: np.ndarray) -> QImage:
     return QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888).copy()
 
 
+def _as_qimage(preview: np.ndarray | QImage | QPixmap) -> QImage:
+    if isinstance(preview, QPixmap):
+        return preview.toImage().copy()
+    if isinstance(preview, QImage):
+        return preview.copy()
+    return _qimage_from_rgb(preview)
+
+
 class Overlay(QWidget):
     """Covers exactly one screen. Emits region rectangles in that screen's
     physical-buffer coordinates (origin at the buffer's top-left)."""
@@ -42,7 +50,7 @@ class Overlay(QWidget):
     fullscreen_selected = Signal(str)      # gdi_name
     cancelled = Signal()
 
-    def __init__(self, screen, gdi_name: str, preview_rgb: np.ndarray,
+    def __init__(self, screen, gdi_name: str, preview_rgb: np.ndarray | QImage | QPixmap,
                  linear: np.ndarray | None = None, sdr_white: float = 80.0,
                  monitor_rect: tuple | None = None):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -54,8 +62,13 @@ class Overlay(QWidget):
         self.setAttribute(Qt.WA_DeleteOnClose)
 
         self.gdi_name = gdi_name
-        self._img = _qimage_from_rgb(preview_rgb)
-        self._buf_w, self._buf_h = preview_rgb.shape[1], preview_rgb.shape[0]
+        self._img = _as_qimage(preview_rgb)
+        if linear is not None:
+            self._buf_w, self._buf_h = linear.shape[1], linear.shape[0]
+        elif monitor_rect is not None:
+            self._buf_w, self._buf_h = int(monitor_rect[2]), int(monitor_rect[3])
+        else:
+            self._buf_w, self._buf_h = self._img.width(), self._img.height()
         self._linear = linear
         self._sdr_white = sdr_white
         self._monitor_rect = monitor_rect     # physical (x, y, w, h) on the virtual desktop
@@ -151,8 +164,10 @@ class Overlay(QWidget):
         """Magnified inset near the cursor with a live RGB / nits readout."""
         bx = int(cursor.x() / max(1, self.width()) * self._buf_w)
         by = int(cursor.y() / max(1, self.height()) * self._buf_h)
+        ix = int(bx / max(1, self._buf_w) * self._img.width())
+        iy = int(by / max(1, self._buf_h) * self._img.height())
         half = LOUPE_SIZE // (2 * LOUPE_ZOOM)
-        src = QRect(bx - half, by - half, half * 2, half * 2)
+        src = QRect(ix - half, iy - half, half * 2, half * 2)
 
         lx = cursor.x() + 20
         ly = cursor.y() + 20
@@ -182,8 +197,23 @@ class Overlay(QWidget):
             r, g, b = (float(v) for v in self._linear[by, bx, :3])
             nits = max(r, g, b) * color.SCRGB_REFERENCE_NITS
             return f"{nits:.0f} nits  scRGB {r:.2f},{g:.2f},{b:.2f}"
-        px = self._img.pixelColor(bx, by)
+        ix = int(bx / max(1, self._buf_w) * self._img.width())
+        iy = int(by / max(1, self._buf_h) * self._img.height())
+        px = self._img.pixelColor(ix, iy)
         return f"RGB {px.red()},{px.green()},{px.blue()}"
+
+    def preview_crop(self, buffer_rect: tuple | None) -> QImage:
+        """Return the compositor preview corresponding to a physical crop."""
+        if buffer_rect is None:
+            return self._img.copy()
+        bx, by, bw, bh = buffer_rect
+        sx = self._img.width() / max(1, self._buf_w)
+        sy = self._img.height() / max(1, self._buf_h)
+        rect = QRect(
+            int(round(bx * sx)), int(round(by * sy)),
+            max(1, int(round(bw * sx))), max(1, int(round(bh * sy))),
+        ).intersected(self._img.rect())
+        return self._img.copy(rect)
 
     # -- window mode ------------------------------------------------------- #
     def _update_window_rect(self, local_pt):
@@ -317,13 +347,25 @@ class RegionSelector(QObject):
             ov.cancelled.connect(self._cancel)
             self._overlays.append(ov)
 
-    def show(self):
+    def show(self) -> bool:
         for ov in self._overlays:
             ov.showFullScreen()
             ov.raise_()
         if self._overlays:
             self._overlays[0].activateWindow()
             self._overlays[0].setFocus()
+            QTimer.singleShot(0, self._focus_first)
+        return bool(self._overlays)
+
+    def _focus_first(self):
+        if self._overlays:
+            self._overlays[0].raise_()
+            self._overlays[0].activateWindow()
+            self._overlays[0].setFocus()
+
+    def _preview_for(self, gdi: str, rect: tuple | None) -> QImage | None:
+        overlay = next((ov for ov in self._overlays if ov.gdi_name == gdi), None)
+        return overlay.preview_crop(rect) if overlay is not None else None
 
     def _close_all(self):
         for ov in self._overlays:
@@ -334,17 +376,19 @@ class RegionSelector(QObject):
         if self._done:
             return
         self._done = True
+        preview = self._preview_for(gdi, rect)
         self._close_all()
         if self.on_region:
-            self.on_region(gdi, rect)
+            self.on_region(gdi, rect, preview)
 
     def _fullscreen(self, gdi):
         if self._done:
             return
         self._done = True
+        preview = self._preview_for(gdi, None)
         self._close_all()
         if self.on_region:
-            self.on_region(gdi, None)   # None -> whole screen
+            self.on_region(gdi, None, preview)   # None -> whole screen
 
     def _cancel(self):
         if self._done:

@@ -36,10 +36,14 @@ def _qimage_from_rgb(arr: np.ndarray) -> QImage:
     return QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888).copy()
 
 
+def _as_qimage(preview: np.ndarray | QImage) -> QImage:
+    return preview.copy() if isinstance(preview, QImage) else _qimage_from_rgb(preview)
+
+
 class Toast(QWidget):
     """One notification. Call :meth:`popup` to show it bottom-right and auto-dismiss."""
 
-    def __init__(self, preview_u8: np.ndarray, path: str, is_hdr: bool,
+    def __init__(self, preview_u8: np.ndarray | QImage, path: str, is_hdr: bool,
                  peak_nits: float, timeout_ms: int = 5000):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setObjectName("toast")
@@ -58,7 +62,7 @@ class Toast(QWidget):
 
         thumb = QLabel()
         thumb.setObjectName("toastThumb")
-        pix = QPixmap.fromImage(_qimage_from_rgb(preview_u8))
+        pix = QPixmap.fromImage(_as_qimage(preview_u8))
         thumb.setPixmap(pix.scaled(84, 60, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         thumb.setFixedSize(88, 64)
         thumb.setAlignment(Qt.AlignCenter)
@@ -113,4 +117,4 @@ class Toast(QWidget):
             subprocess.Popen(["explorer", "/select,", os.path.normpath(self._path)])
 
     def _copy(self):
-        QGuiApplication.clipboard().setImage(_qimage_from_rgb(self._preview))
+        QGuiApplication.clipboard().setImage(_as_qimage(self._preview))

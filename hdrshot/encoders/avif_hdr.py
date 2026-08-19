@@ -43,7 +43,7 @@ def write_avif_pq(path: str, linear: np.ndarray, quality: int = 90) -> dict:
     import imagecodecs  # pyright: ignore[reportMissingImports]
 
     pq10 = color.scrgb_to_pq_bt2020_u16(linear, bit_depth=10)
-    encoded = imagecodecs.avif_encode(
+    encoded = bytes(imagecodecs.avif_encode(
         np.ascontiguousarray(pq10),
         level=max(0, min(100, quality)),
         bitspersample=10,
@@ -55,7 +55,7 @@ def write_avif_pq(path: str, linear: np.ndarray, quality: int = 90) -> dict:
         primaries=CP_BT2020,
         transfer=TC_PQ,
         matrix=MC_BT2020_NCL,
-    )
+    ))
     cicp = _assert_cicp(encoded)
     with open(path, "wb") as fp:
         fp.write(encoded)

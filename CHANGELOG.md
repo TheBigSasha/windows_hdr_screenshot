@@ -6,6 +6,40 @@ All notable changes to HDR Shot are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-18
+
+### Added
+- Automatic post-selection saving, enabled by default and configurable in
+  Preferences, so a capture produces a file without a second Save click.
+- A per-user single-instance guard: relaunching HDR Shot activates the resident
+  process instead of creating conflicting hotkey and Desktop Duplication owners.
+
+### Changed
+- The region selector now uses the native Windows compositor preview rather
+  than CPU-tone-mapping the entire FP16 desktop twice. D3D11 capture remains
+  native, while full-quality encoding stays asynchronous.
+- Desktop Duplication now negotiates the required BGRA8 scan-out fallback as
+  well as FP16 scRGB and 10-bit RGB, improving Qualcomm/ARM64 driver compatibility.
+- Capture startup no longer includes a fixed 140 ms delay. Worker lifetimes and
+  selector focus are held explicitly, and the UI reports capture progress,
+  timeouts, Desktop Duplication denial, and session exhaustion visibly.
+- The native setup app closes only the exact installed HDR Shot process during
+  upgrades and provides normal confirmation/success/error dialogs.
+
+### Fixed
+- Capture button and global-hotkey actions no longer hide the app and then fail
+  silently when the selector cannot be created or Windows denies capture.
+- Successful saves no longer crash the GUI callback by trying to mutate the
+  immutable typed encoder result, and completion signals cannot disappear with
+  a short-lived worker.
+
+## [0.4.0] - 2026-08-09
+
+### Fixed
+- The Windows installer is now windowed, so installation does not flash a terminal.
+- Per-user Start Menu registration now uses the indexed Programs path and is
+  verified to target the installed GUI on native x64 and ARM64 runners.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added
