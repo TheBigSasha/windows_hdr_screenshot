@@ -73,7 +73,9 @@ def test_hdr_preview_requests_pq_float_gpu_surface(qapp):
         color_space = widget.format().colorSpace()
         assert color_space.isValid()
         assert color_space.description() == "BT.2100(PQ)"
-        assert widget.textureFormat() == 0x881A  # GL_RGBA16F
+        assert widget.format().redBufferSize() == 16
+        assert widget.format().greenBufferSize() == 16
+        assert widget.format().blueBufferSize() == 16
     finally:
         widget.close()
 

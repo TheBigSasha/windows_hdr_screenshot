@@ -10,10 +10,9 @@ import os
 import subprocess
 
 import numpy as np
-from PySide6.QtCore import QRect, QRectF, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QRect, QRectF, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QColorSpace, QGuiApplication, QImage, QPixmap, QSurfaceFormat
-from PySide6.QtOpenGL import QOpenGLTexture, QOpenGLTextureBlitter
-from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtOpenGL import QOpenGLTexture, QOpenGLTextureBlitter, QOpenGLWindow
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -53,15 +52,16 @@ def _qimage_from_rgb(arr: np.ndarray) -> QImage:
     return QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888).copy()
 
 
-class HDRPreviewWidget(QOpenGLWidget):
+class HDRPreviewWidget(QOpenGLWindow):
     """GPU presentation of a captured scRGB buffer as BT.2100/PQ.
 
     The old preview converted the capture to an 8-bit SDR ``QImage`` before
-    it ever reached Qt.  This widget keeps the HDR signal in an RGBA16F GPU
-    texture and blits it into a BT.2100(PQ) surface.  The Qt blitter supplies
-    portable shaders for desktop OpenGL and ANGLE, while the 16-bit swapchain
-    request lets Windows map PQ values to an HDR monitor.  Clipboard and SDR
-    notification paths intentionally continue to use ``_preview_image``.
+    it ever reached Qt.  This native child window keeps the HDR signal in an
+    RGBA16F GPU texture and blits it into a BT.2100(PQ) surface.  The Qt
+    blitter supplies portable shaders for desktop OpenGL and ANGLE, while the
+    16-bit native swapchain request lets Windows map PQ values to an HDR
+    monitor.  Clipboard and SDR notification paths intentionally continue to
+    use ``_preview_image``.
     """
 
     render_failed = Signal(str)
@@ -77,17 +77,14 @@ class HDRPreviewWidget(QOpenGLWidget):
         if pq_space is None:
             raise RuntimeError("Qt 6.8 or newer is required for a BT.2100/PQ preview surface")
         fmt.setColorSpace(QColorSpace(pq_space))
-        super().__init__(parent)
+        super().__init__(QOpenGLWindow.NoPartialUpdate, parent)
         self.setFormat(fmt)
-        # GL_RGBA16F; this keeps the intermediate QOpenGLWidget FBO HDR too.
-        self.setTextureFormat(0x881A)
         self._pixels = np.ascontiguousarray(rgba16f, dtype=np.float16)
         self._texture: QOpenGLTexture | None = None
         self._blitter: QOpenGLTextureBlitter | None = None
         self._ready = False
         self._failed = False
-        self.setMinimumHeight(300)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumSize(QSize(1, 1))
 
     def _fail(self, exc: Exception) -> None:
         self._failed = True
@@ -184,6 +181,7 @@ class PreviewWindow(QWidget):
             if result.hdr_capable_content else None
         )
         self._hdr_widget: HDRPreviewWidget | None = None
+        self._hdr_container: QWidget | None = None
         self._thumb_stack: QStackedWidget | None = None
         self._hdr_preview_error: str | None = None
         self._saved_path: str | None = None
@@ -235,7 +233,10 @@ class PreviewWindow(QWidget):
             try:
                 self._hdr_widget = HDRPreviewWidget(self._hdr_rgba16f)
                 self._hdr_widget.render_failed.connect(self._on_hdr_render_failed)
-                self._thumb_stack.addWidget(self._hdr_widget)
+                self._hdr_container = QWidget.createWindowContainer(self._hdr_widget)
+                self._hdr_container.setMinimumHeight(300)
+                self._hdr_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                self._thumb_stack.addWidget(self._hdr_container)
             except Exception as exc:  # pragma: no cover - Qt version/driver
                 self._hdr_preview_error = str(exc)
 
@@ -247,7 +248,7 @@ class PreviewWindow(QWidget):
         self._thumb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._thumb_stack.addWidget(self._thumb)
         self._thumb_stack.setCurrentWidget(
-            self._hdr_widget if self._hdr_widget is not None else self._thumb
+            self._hdr_container if self._hdr_container is not None else self._thumb
         )
         root.addWidget(self._thumb_stack)
 
