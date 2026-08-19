@@ -9,8 +9,9 @@ Coordinate conventions
 * ``DisplayInfo`` / ``MonitorCapture`` rectangles are **physical pixels** on the
   virtual desktop (per-monitor-v2 DPI awareness), keyed by the GDI device name
   (e.g. ``\\.\DISPLAY5``) so the two Win32 enumeration sources join cleanly.
-* ``MonitorCapture.linear`` is scRGB-linear float32, BT.709 primaries, where
-  ``1.0`` == 80 nits (the scRGB reference white).
+* ``MonitorCapture.linear`` is native scRGB-linear float16 (or float32 for
+  platform/test backends), BT.709 primaries, where ``1.0`` == 80 nits. The
+  pipeline promotes only the selected region before analysis/encoding.
 """
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ class DisplayInfo:
 
 @dataclass
 class MonitorCapture:
-    """One captured output: an scRGB-linear float32 buffer plus where it lives on
+    """One captured output: an scRGB-linear buffer plus where it lives on
     the virtual desktop."""
 
     gdi_name: str
@@ -66,7 +67,7 @@ class MonitorCapture:
     width: int
     height: int
     rotation: int
-    linear: np.ndarray  # (H, W, 3) float32, scRGB linear, 1.0 == 80 nits
+    linear: np.ndarray  # (H, W, 3) float16/float32, scRGB linear, 1.0 == 80 nits
 
     @property
     def rect(self) -> tuple[int, int, int, int]:

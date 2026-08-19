@@ -157,10 +157,21 @@ def _optional(profile: str, module_name: str) -> CodecCapability:
                 params = inspect.signature(encoder).parameters
             except (TypeError, ValueError):
                 params = None
-            if params is not None and "primaries" not in params:
-                raise RuntimeError("imagecodecs AVIF encoder lacks nclx profile arguments")
+            required = {"bitspersample", "pixelformat", "primaries", "transfer", "matrix"}
+            if params is not None and not required <= set(params):
+                missing = ", ".join(sorted(required - set(params)))
+                raise RuntimeError(
+                    f"imagecodecs AVIF encoder lacks required HDR arguments: {missing}"
+                )
+        version = _distribution_version(distribution, module)
+        if profile == "pq-avif":
+            version_fn = getattr(module, "avif_version", None)
+            if callable(version_fn):
+                libavif_version = version_fn()
+                if libavif_version:
+                    version = f"{version} ({libavif_version})" if version else str(libavif_version)
         return CodecCapability(profile, True, "available", None, representation,
-                               provider, _distribution_version(distribution, module))
+                               provider, version)
     except Exception as exc:
         return CodecCapability(profile, False, "broken",
                                f"{module_name} failed to load: {type(exc).__name__}: {exc}",

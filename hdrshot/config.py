@@ -27,6 +27,7 @@ DEFAULTS: dict = {
     "gainmap_quality": 90,             # UltraHDR base/gainmap JPEG quality
     "gainmap_downscale": 1,            # gain-map resolution divisor (1 = full res)
     "copy_to_clipboard": False,        # also copy the SDR image on save
+    "auto_save": True,                 # save the default format immediately
     "notifications": True,             # post-capture toast
     "run_at_login": False,             # start with Windows
 }

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import time
 from ctypes import wintypes
 
 import numpy as np
@@ -24,8 +25,10 @@ from ...core import color
 from ...core.types import MonitorCapture, apply_rotation, rotation_to_degrees
 from .com import (
     DXGI_ERROR_ACCESS_LOST,
+    DXGI_ERROR_NOT_CURRENTLY_AVAILABLE,
     DXGI_ERROR_NOT_FOUND,
     DXGI_ERROR_WAIT_TIMEOUT,
+    E_ACCESSDENIED,
     HRESULT,
     RECT,
     S_OK,
@@ -231,13 +234,45 @@ def _grab_output(device, ctx, output, desc, timeout_ms=120, tries=45) -> np.ndar
     if not out5:
         raise CaptureError("IDXGIOutput5 unavailable (needs Windows 10 1803+)")
     dup = ctypes.c_void_p()
-    fmts = (ctypes.c_uint * 1)(DXGI_FORMAT_R16G16B16A16_FLOAT)
+    # DuplicateOutput1 requires a list of scan-out formats the application can
+    # consume. Microsoft explicitly requires BGRA8 to be present; Qualcomm's
+    # ARM64 driver rejects an FP16-only list even when the HDR compositor is
+    # currently using FP16. Prefer scRGB, while accepting the native 10/8-bit
+    # paths that _decode_surface already handles.
+    fmts = (ctypes.c_uint * 4)(
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
+        DXGI_FORMAT_R10G10B10A2_UNORM,
+        DXGI_FORMAT_B8G8R8A8_UNORM,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+    )
     try:
-        hr = vfn(out5, VTBL.IDXGIOutput5_DuplicateOutput1, HRESULT,
-                 ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint,
-                 ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_void_p))(
-            out5, device, 0, 1, fmts, ctypes.byref(dup))
+        duplicate = vfn(out5, VTBL.IDXGIOutput5_DuplicateOutput1, HRESULT,
+                        ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint,
+                        ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_void_p))
+        hr = S_OK
+        for attempt in range(3):
+            hr = duplicate(out5, device, 0, len(fmts), fmts, ctypes.byref(dup))
+            if hr == S_OK:
+                break
+            code = hr & 0xFFFFFFFF
+            if code not in (E_ACCESSDENIED, DXGI_ERROR_NOT_CURRENTLY_AVAILABLE) or attempt == 2:
+                break
+            # Driver/session transitions can deny duplication for a few frames.
+            # A bounded 50 ms retry is cheaper than making the user press the
+            # hotkey again and has no effect on the normal fast path.
+            time.sleep(0.05)
         if hr != S_OK:
+            code = hr & 0xFFFFFFFF
+            if code == E_ACCESSDENIED:
+                raise CaptureError(
+                    "Windows denied D3D11 Desktop Duplication (0x80070005). "
+                    "Unlock the session and close other active screenshot or recording tools, then retry."
+                )
+            if code == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE:
+                raise CaptureError(
+                    "Windows has no free Desktop Duplication session (0x887A0022). "
+                    "Close other screenshot or recording tools, then retry."
+                )
             raise CaptureError(f"DuplicateOutput1 failed: {hr_hex(hr)}")
         oddesc = DXGI_OUTDUPL_DESC()
         vfn(dup.value, VTBL.IDXGIOutputDuplication_GetDesc, HRESULT,
@@ -321,7 +356,10 @@ def _decode_surface(raw: bytes, row_pitch: int, w: int, h: int, fmt: int) -> np.
         log.debug("decoding FP16 scRGB surface %dx%d (HDR path)", w, h)
         arr = np.frombuffer(raw, np.float16).reshape(h, row_pitch // 2)
         rgba = arr[:, : w * 4].reshape(h, w, 4)
-        return np.ascontiguousarray(rgba[:, :, :3]).astype(np.float32)  # already linear scRGB
+        # Keep the frozen desktop in native FP16. The pipeline promotes only the
+        # selected crop to float32, halving resident capture memory without
+        # losing a single source bit.
+        return np.ascontiguousarray(rgba[:, :, :3])  # already linear scRGB
 
     if fmt in (DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
                DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB):
@@ -395,6 +433,7 @@ def capture_all() -> dict[str, MonitorCapture]:
     """
     factory = _create_factory()
     results: dict[str, MonitorCapture] = {}
+    failures: list[str] = []
     try:
         with _CaptureSession():
             for adapter in _enum_adapters(factory):
@@ -416,6 +455,7 @@ def capture_all() -> dict[str, MonitorCapture]:
                                 # One failing output (secure desktop, mode change,
                                 # driver hiccup) must not abort the other monitors.
                                 log.warning("skipping output %s: %s", desc.DeviceName, e)
+                                failures.append(f"{desc.DeviceName}: {e}")
                                 continue
                             if linear is None:
                                 log.warning("no frame for %s", desc.DeviceName)
@@ -444,7 +484,8 @@ def capture_all() -> dict[str, MonitorCapture]:
     finally:
         com_release(factory)
     if not results:
-        raise CaptureError("No desktop frames captured (all outputs timed out).")
+        detail = "; ".join(failures)
+        raise CaptureError(detail or "No desktop frames captured (all outputs timed out).")
     log.info("captured %d output(s): %s", len(results), ", ".join(results))
     return results
 

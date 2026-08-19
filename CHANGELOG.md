@@ -6,13 +6,60 @@ All notable changes to HDR Shot are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-08-18
+
+### Added
+- A crisp vector cog replaces the ambiguous settings glyph in Preferences.
+
+### Fixed
+- Correct AVIF NCLX full-range parsing (the flag is the high bit), retain 4:4:4
+  chroma for screenshot sharpness, and verify 10-bit PQ values numerically on
+  the native imagecodecs/libavif path.
+- Replace raw AVIF marker searches with bounded primary-item ISO-BMFF parsing;
+  distinguish 10-bit SDR, single-rendition PQ, and structurally valid ISO
+  21496-1 gain-map AVIF metadata without inferring viewer compatibility.
+- Require the first imagecodecs release that actually exposes AVIF CICP/NCLX
+  controls (`2025.11.11`) and report both package and libavif versions.
+
+## [0.4.2] - 2026-08-18
+
+### Fixed
+- The post-public release verifier now passes the repository explicitly to
+  `gh release download`, so it works in the checkout-free publish job.
+
+## [0.4.1] - 2026-08-18
+
+### Added
+- Automatic post-selection saving, enabled by default and configurable in
+  Preferences, so a capture produces a file without a second Save click.
+- A per-user single-instance guard: relaunching HDR Shot activates the resident
+  process instead of creating conflicting hotkey and Desktop Duplication owners.
+
+### Changed
+- The region selector now uses the native Windows compositor preview rather
+  than CPU-tone-mapping the entire FP16 desktop twice. D3D11 capture remains
+  native, while full-quality encoding stays asynchronous.
+- Desktop Duplication now negotiates the required BGRA8 scan-out fallback as
+  well as FP16 scRGB and 10-bit RGB, improving Qualcomm/ARM64 driver compatibility.
+- Capture startup no longer includes a fixed 140 ms delay. Worker lifetimes and
+  selector focus are held explicitly, and the UI reports capture progress,
+  timeouts, Desktop Duplication denial, and session exhaustion visibly.
+- The native setup app closes only the exact installed HDR Shot process during
+  upgrades and provides normal confirmation/success/error dialogs.
+
+### Fixed
+- Capture button and global-hotkey actions no longer hide the app and then fail
+  silently when the selector cannot be created or Windows denies capture.
+- Successful saves no longer crash the GUI callback by trying to mutate the
+  immutable typed encoder result, and completion signals cannot disappear with
+  a short-lived worker.
+
 ## [0.4.0] - 2026-08-09
 
 ### Fixed
 - The Windows installer is now windowed, so installation does not flash a terminal.
 - Per-user Start Menu registration now uses the indexed Programs path and is
   verified to target the installed GUI on native x64 and ARM64 runners.
-
 
 ## [0.3.0] - 2026-08-08
 

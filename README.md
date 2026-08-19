@@ -26,9 +26,9 @@ Requires Windows 10 1803+ / Windows 11 and Python 3.10+.
 ### Production install
 
 The release workflow publishes production artifacts only after native x64 and
-ARM64 builds pass clean extracted-ZIP verification. Until a verified release is
-available, use the source workflow below. This keeps a missing `/releases/latest`
-endpoint from being presented as a working installer.
+ARM64 builds pass clean extracted-ZIP and installer verification. Download the
+setup EXE for this PC from the
+[latest GitHub release](https://github.com/TheBigSasha/windows_hdr_screenshot/releases/latest).
 
 Each release contains architecture-specific `HDRShot-<version>-<arch>-setup.exe`
 installers plus the underlying `HDRShot.exe`/`hdrshot-cli.exe` bundles, exact
@@ -36,6 +36,11 @@ capability contracts, SHA-256 files, dependency SBOMs, and build provenance. The
 `install.ps1` accepts an explicit `-InstallDir`, stages and validates a new
 version, then swaps it transactionally while retaining the previous version for
 rollback.
+
+The GUI stays resident in the notification area for instant global hotkeys.
+Capture Region and Whole Screen use customizable shortcuts in Preferences;
+after a selection, the default format is saved automatically to the displayed
+Screenshots folder. Automatic saving can also be disabled in Preferences.
 
 ### Development environment
 
