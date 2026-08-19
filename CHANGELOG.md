@@ -6,6 +6,13 @@ All notable changes to HDR Shot are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-08-18
+
+### Changed
+- Present the HDR preview through a native `QOpenGLWindow` child surface so
+  the requested 16-bit BT.2100/PQ swapchain is preserved by Qt on Windows,
+  rather than compositing through an 8-bit widget backing store.
+
 ## [0.4.6] - 2026-08-18
 
 ### Fixed
