@@ -6,6 +6,11 @@ All notable changes to HDR Shot are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-08-18
+
+### Fixed
+- Align the AVIF self-test with the ISO NCLX full-range high-bit contract.
+
 ## [0.4.3] - 2026-08-18
 
 ### Added
