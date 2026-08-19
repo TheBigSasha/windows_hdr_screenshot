@@ -114,18 +114,42 @@ def pq_oetf(nits: np.ndarray) -> np.ndarray:
     return np.power(num / den, _PQ_M2)
 
 
+def scrgb_to_pq_bt2020_float(linear: np.ndarray) -> np.ndarray:
+    """scRGB FP16 -> normalized BT.2020 PQ values as ``float32``.
+
+    The result is suitable for an HDR display surface (0..1 PQ signal).  It
+    deliberately keeps floating-point precision; file encoders can quantize
+    it separately to their requested bit depth.
+    """
+    rgb = np.clip(linear[..., :3].astype(np.float32), 0.0, None)
+    nits = rgb * SCRGB_REFERENCE_NITS
+    nits2020 = np.clip(nits @ _BT709_TO_BT2020.T, 0.0, 10000.0)
+    return pq_oetf(nits2020).astype(np.float32, copy=False)
+
+
 def scrgb_to_pq_bt2020_u16(linear: np.ndarray, bit_depth: int = 10) -> np.ndarray:
     """scRGB FP16 -> BT.2020 PQ code values in uint16.
 
     Returns (H, W, 3) uint16 holding right-justified code values in
     ``[0, 2**bit_depth - 1]`` (not shifted into the high bits).
     """
-    rgb = np.clip(linear[..., :3].astype(np.float32), 0.0, None)
-    nits = rgb * SCRGB_REFERENCE_NITS
-    nits2020 = np.clip(nits @ _BT709_TO_BT2020.T, 0.0, 10000.0)
-    pq = pq_oetf(nits2020)
+    pq = scrgb_to_pq_bt2020_float(linear)
     maxv = (1 << bit_depth) - 1
     return np.clip(pq * maxv + 0.5, 0, maxv).astype(np.uint16)
+
+
+def scrgb_to_pq_bt2020_rgba16f(linear: np.ndarray) -> np.ndarray:
+    """Pack scRGB into an RGBA16F BT.2020/PQ display texture.
+
+    This is the upload format used by the GPU preview.  The alpha channel is
+    opaque and the returned array owns its storage so the GL upload remains
+    valid after the worker/capture buffers are released.
+    """
+    pq = scrgb_to_pq_bt2020_float(linear)
+    rgba = np.empty((*pq.shape[:2], 4), dtype=np.float16)
+    rgba[..., :3] = pq
+    rgba[..., 3] = 1.0
+    return np.ascontiguousarray(rgba)
 
 
 # --------------------------------------------------------------------------- #

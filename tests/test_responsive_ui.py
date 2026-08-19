@@ -17,7 +17,7 @@ from hdrshot.config import DEFAULTS, Config  # noqa: E402
 from hdrshot.core.pipeline import CaptureResult  # noqa: E402
 from hdrshot.core.types import MonitorCapture  # noqa: E402
 from hdrshot.ui.overlay import Overlay  # noqa: E402
-from hdrshot.ui.preview import PreviewWindow  # noqa: E402
+from hdrshot.ui.preview import HDRPreviewWidget, PreviewWindow  # noqa: E402
 from hdrshot.ui.single_instance import SingleInstance, instance_name  # noqa: E402
 from hdrshot.ui.workers import CaptureWorker  # noqa: E402
 
@@ -64,6 +64,18 @@ def test_capture_worker_emits_raw_gpu_capture_without_cpu_preview():
     worker.signals.finished.connect(received.append)
     worker.run()
     assert received == [({"DISPLAY": capture}, ["display-info"])]
+
+
+def test_hdr_preview_requests_pq_float_gpu_surface(qapp):
+    pixels = np.ones((4, 6, 4), dtype=np.float16)
+    widget = HDRPreviewWidget(pixels)
+    try:
+        color_space = widget.format().colorSpace()
+        assert color_space.isValid()
+        assert color_space.description() == "BT.2100(PQ)"
+        assert widget.textureFormat() == 0x881A  # GL_RGBA16F
+    finally:
+        widget.close()
 
 
 def test_overlay_maps_native_preview_to_full_resolution_buffer(qapp):

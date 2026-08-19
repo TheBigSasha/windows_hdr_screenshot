@@ -73,3 +73,13 @@ def test_pq_bt2020_u16_bit_depth():
     assert out.dtype == np.uint16
     assert out.max() <= 1023  # 10-bit range
     assert out.max() >= 1000  # near the top of the range
+
+
+def test_scrgb_to_pq_bt2020_rgba16f_preserves_hdr_signal():
+    buf = np.array([[[1.0, 1.0, 1.0], [20.0, 20.0, 20.0]]], dtype=np.float32)
+    rgba = color.scrgb_to_pq_bt2020_rgba16f(buf)
+    assert rgba.dtype == np.float16
+    assert rgba.shape == (1, 2, 4)
+    assert np.all(rgba[..., 3] == 1.0)
+    assert np.all((rgba[..., :3] >= 0.0) & (rgba[..., :3] <= 1.0))
+    assert float(rgba[0, 1, 0]) > float(rgba[0, 0, 0])
