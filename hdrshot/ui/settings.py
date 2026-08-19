@@ -1,7 +1,8 @@
 """Preferences window (issue #5): edits and persists the JSON config.
 
 Covers default format, save directory + filename template, capture hotkeys,
-gain-map quality/downscale, clipboard behaviour, notifications and run-at-login.
+gain-map quality/downscale, automatic save, clipboard behaviour, notifications
+and run-at-login.
 Validates the filename template and hotkeys before saving.
 """
 from __future__ import annotations
@@ -111,6 +112,10 @@ class PreferencesDialog(QDialog):
         self.copy_clip.setChecked(bool(self.config.get("copy_to_clipboard")))
         form.addRow("", self.copy_clip)
 
+        self.auto_save = QCheckBox("Save automatically after I select a region")
+        self.auto_save.setChecked(bool(self.config.get("auto_save")))
+        form.addRow("", self.auto_save)
+
         self.notify = QCheckBox("Show a notification after each capture")
         self.notify.setChecked(bool(self.config.get("notifications")))
         form.addRow("", self.notify)
@@ -189,6 +194,7 @@ class PreferencesDialog(QDialog):
         c.set("gainmap_quality", self.quality.value())
         c.set("gainmap_downscale", self.downscale.value())
         c.set("copy_to_clipboard", self.copy_clip.isChecked())
+        c.set("auto_save", self.auto_save.isChecked())
         c.set("notifications", self.notify.isChecked())
         c.set("run_at_login", self.run_login.isChecked())
         startup.set_enabled(self.run_login.isChecked())

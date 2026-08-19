@@ -7,7 +7,9 @@ paths/templates (#4) are wired in through the persisted `Config`.
 from __future__ import annotations
 
 import logging
+import platform
 import sys
+import time
 
 from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtGui import (
@@ -16,6 +18,7 @@ from PySide6.QtGui import (
     QFont,
     QGuiApplication,
     QIcon,
+    QImage,
     QLinearGradient,
     QPainter,
     QPixmap,
@@ -31,12 +34,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import Config
+from ..config import Config, config_dir
 from ..core import pipeline
 from ..hotkeys import HotkeyManager
 from .overlay import RegionSelector
 from .preview import PreviewWindow
 from .settings import PreferencesDialog
+from .single_instance import SingleInstance
 from .toast import Toast
 from .workers import CaptureWorker
 
@@ -98,6 +102,7 @@ class MainWindow(QWidget):
         self.setObjectName("main")
         self.setWindowTitle("HDR Shot")
         self.setFixedWidth(440)
+        self._default_foot = ""
         self._build()
         self.refresh_status()
 
@@ -128,13 +133,13 @@ class MainWindow(QWidget):
         root.addWidget(sub)
 
         btns = QHBoxLayout()
-        region = QPushButton("⬚  Capture Region")
-        region.setObjectName("capture")
-        region.clicked.connect(lambda: self.controller.start_capture())
-        screen = QPushButton("🖵  Whole Screen")
-        screen.clicked.connect(lambda: self.controller.start_capture(fullscreen=True))
-        btns.addWidget(region, 2)
-        btns.addWidget(screen, 1)
+        self.region_button = QPushButton("⬚  Capture Region")
+        self.region_button.setObjectName("capture")
+        self.region_button.clicked.connect(lambda: self.controller.start_capture())
+        self.screen_button = QPushButton("🖵  Whole Screen")
+        self.screen_button.clicked.connect(lambda: self.controller.start_capture(fullscreen=True))
+        btns.addWidget(self.region_button, 2)
+        btns.addWidget(self.screen_button, 1)
         root.addLayout(btns)
 
         self.foot = QLabel("")
@@ -166,7 +171,19 @@ class MainWindow(QWidget):
         # Per-display state (issue #17): don't hide a mixed HDR/SDR setup.
         per = "   ·   ".join(f"{d.friendly_name}: {d.state_label}" for d in disps)
         hk = self.controller.config.get("hotkey_region")
-        self.foot.setText(f"{note}\n{per}\nHotkey: {hk}  ·  saves to your Pictures\\Screenshots.")
+        arch = platform.machine().upper()
+        path = self.controller.config.resolved_save_dir()
+        self._default_foot = (
+            f"{note}\n{per}\nHotkey: {hk}  ·  auto-saves to {path}\n"
+            f"Native {arch}  ·  D3D11 GPU capture"
+        )
+        self.foot.setText(self._default_foot)
+
+    def set_capture_state(self, busy: bool, message: str | None = None):
+        self.region_button.setEnabled(not busy)
+        self.screen_button.setEnabled(not busy)
+        self.region_button.setText("Capturing…" if busy else "⬚  Capture Region")
+        self.foot.setText(message if message is not None else self._default_foot)
 
 
 class HdrShotApp:
@@ -185,6 +202,9 @@ class HdrShotApp:
         self._disps = None
         self._pending_fullscreen = False
         self._capturing = False
+        self._capture_worker: CaptureWorker | None = None
+        self._capture_token = 0
+        self._capture_started = 0.0
         self._build_tray()
         self._setup_hotkeys()
 
@@ -241,8 +261,11 @@ class HdrShotApp:
         self.hotkeys.unregister_all()
         self._setup_hotkeys()
 
-    def show_window(self):
+    def show_window(self, status: str | None = None):
+        if self._capturing or self._selector is not None:
+            return
         self.window.refresh_status()
+        self.window.set_capture_state(False, status)
         self.window.show()
         self.window.raise_()
         self.window.activateWindow()
@@ -262,6 +285,14 @@ class HdrShotApp:
         finally:
             self.app.quit()
 
+    def handle_instance_command(self, command: str):
+        if command == "capture-region":
+            self.start_capture()
+        elif command == "capture-screen":
+            self.start_capture(fullscreen=True)
+        else:
+            self.show_window()
+
     # -- capture flow ------------------------------------------------------ #
     def _timed_capture(self, seconds: int):
         self.window.hide()
@@ -269,37 +300,82 @@ class HdrShotApp:
 
     def start_capture(self, fullscreen: bool = False):
         if self._capturing or self._selector is not None:
-            return                                       # already mid-capture
+            self.tray.setToolTip("HDR Shot — capture already in progress")
+            return
         self._capturing = True
         self._pending_fullscreen = fullscreen
+        self._capture_token += 1
+        token = self._capture_token
+        self._capture_started = time.perf_counter()
+        self.window.set_capture_state(True, "Capturing the HDR desktop on the GPU…")
+        self.tray.setToolTip("HDR Shot — capturing…")
         self.window.hide()
-        QTimer.singleShot(140, self._spawn_capture)      # let the window disappear
+        # One compositor turn is enough to remove our window. The old 140 ms
+        # fixed sleep was pure input latency on every capture.
+        QTimer.singleShot(0, lambda: self._spawn_capture(token))
+        QTimer.singleShot(15000, lambda: self._capture_timeout(token))
 
-    def _spawn_capture(self):
+    def _spawn_capture(self, token: int):
+        if not self._capturing or token != self._capture_token:
+            return
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                # Wait one native composition present so our hidden toolbar is
+                # absent from the frozen desktop without an arbitrary sleep.
+                ctypes.windll.dwmapi.DwmFlush()
+            except (AttributeError, OSError):
+                pass
         worker = CaptureWorker(self.backend)
-        worker.signals.finished.connect(self._on_captured)
-        worker.signals.error.connect(self._on_capture_error)
+        worker.signals.finished.connect(lambda payload: self._on_captured(token, payload))
+        worker.signals.error.connect(lambda msg: self._on_capture_error(token, msg))
+        self._capture_worker = worker
         self.pool.start(worker)
 
-    def _on_capture_error(self, msg: str):
-        self._capturing = False
-        self._caps = None                        # drop any full-monitor buffers
-        self.tray.showMessage("HDR Shot", f"Capture failed: {msg}", QSystemTrayIcon.Warning)
-        self.show_window()
+    def _capture_timeout(self, token: int):
+        if (self._capturing and self._capture_worker is not None
+                and token == self._capture_token):
+            self._on_capture_error(
+                token, "Capture timed out. Windows did not return a desktop frame within 15 seconds."
+            )
 
-    def _on_captured(self, payload):
-        caps, disps, previews = payload
+    def _on_capture_error(self, token: int, msg: str):
+        if token != self._capture_token:
+            return
+        self._capture_token += 1
+        self._capturing = False
+        self._capture_worker = None
+        self._caps = None                        # drop any full-monitor buffers
+        self.tray.setToolTip("HDR Shot")
+        message = f"Capture failed: {msg}"
+        self.tray.showMessage("HDR Shot", message, QSystemTrayIcon.Warning)
+        self.show_window(message)
+
+    def _on_captured(self, token: int, payload):
+        if token != self._capture_token or not self._capturing:
+            return
+        self._capture_worker = None
+        caps, disps = payload
         self._caps, self._disps = caps, disps
         if not disps:
-            self._on_capture_error("no displays detected")
-            return
-
-        if self._pending_fullscreen:
-            primary = next((d for d in disps if d.is_primary), disps[0])
-            self._on_region(primary.gdi_name, None)
+            self._on_capture_error(token, "no displays detected")
             return
 
         lookup = self._screen_lookup(disps)
+        if self._pending_fullscreen:
+            primary = next((d for d in disps if d.is_primary), disps[0])
+            preview = self._grab_native_preview(lookup(primary.gdi_name))
+            self._on_region(primary.gdi_name, None, preview)
+            return
+
+        previews = {}
+        for name in caps:
+            preview = self._grab_native_preview(lookup(name))
+            if preview is not None:
+                previews[name] = preview
+        if not previews:
+            self._on_capture_error(token, "Windows returned no usable selector preview")
+            return
         linears = {name: mc.linear for name, mc in caps.items()}
         whites = {d.gdi_name: d.sdr_white_nits for d in disps}
         monitor_rects = {name: (mc.x, mc.y, mc.width, mc.height) for name, mc in caps.items()}
@@ -307,7 +383,22 @@ class HdrShotApp:
                                         whites=whites, monitor_rects=monitor_rects)
         self._selector.on_region = self._on_region
         self._selector.on_cancel = self._on_cancel
-        self._selector.show()
+        if not self._selector.show():
+            self._selector = None
+            self._on_capture_error(token, "the region selector could not be shown on any display")
+            return
+        elapsed = time.perf_counter() - self._capture_started
+        self.tray.setToolTip(f"HDR Shot — select a region ({elapsed:.2f}s ready)")
+
+    @staticmethod
+    def _grab_native_preview(screen) -> QImage | None:
+        """Use the native Windows/Qt compositor path instead of CPU tone mapping."""
+        if screen is None:
+            return None
+        pixmap = screen.grabWindow(0)
+        if pixmap.isNull():
+            return None
+        return pixmap.toImage().convertToFormat(QImage.Format_RGB888)
 
     def _screen_lookup(self, disps):
         """Match a GDI device name to its QScreen deterministically (issue #17).
@@ -334,21 +425,23 @@ class HdrShotApp:
             return pos_map.get(gdi)
         return lookup
 
-    def _on_region(self, gdi_name, buffer_rect):
+    def _on_region(self, gdi_name, buffer_rect, preview_image=None):
         self._selector = None
         try:
             result = pipeline.capture_buffer_region(self._caps, self._disps, gdi_name, buffer_rect)
         except Exception as e:
-            self._on_capture_error(str(e))
+            self._on_capture_error(self._capture_token, str(e))
             return
-        # Release the full-monitor scRGB float32 buffers now. A region crop is an
-        # independent copy, so every monitor is freed; a whole-screen grab aliases
-        # the selected display (kept alive by the preview) but frees the others.
+        # Release the native FP16 full-monitor buffers now. A region is promoted
+        # to an independent float32 encode buffer; full-screen capture promotes
+        # the selected monitor on demand. Every other monitor is freed here.
         self._caps = None
         self._capturing = False
+        self.tray.setToolTip("HDR Shot")
         # Keep every open preview alive (a new capture must not hard-delete an
         # earlier preview holding an unsaved shot); pruned on window close.
-        preview = PreviewWindow(result, self.config, on_saved=self._on_saved)
+        preview = PreviewWindow(result, self.config, on_saved=self._on_saved,
+                                preview_image=preview_image)
         preview.setStyleSheet(STYLE)
         self._previews.append(preview)
         preview.destroyed.connect(
@@ -369,6 +462,9 @@ class HdrShotApp:
         self._selector = None
         self._caps = None
         self._capturing = False
+        self._capture_worker = None
+        self._capture_token += 1
+        self.tray.setToolTip("HDR Shot")
         self.show_window()
 
 
@@ -383,10 +479,19 @@ def main() -> int:
         return 2
     backend.set_process_dpi_aware()
     app = QApplication.instance() or QApplication(sys.argv)
+    app.setApplicationName("HDR Shot")
     app.setQuitOnLastWindowClosed(False)
-    controller = HdrShotApp(app, backend)
-    controller.show_window()
-    return app.exec()
+    instance = SingleInstance(config_dir())
+    if not instance.acquire("show"):
+        return 0
+    try:
+        controller = HdrShotApp(app, backend)
+        instance.set_handler(controller.handle_instance_command)
+        app.aboutToQuit.connect(instance.close)
+        controller.show_window()
+        return app.exec()
+    finally:
+        instance.close()
 
 
 if __name__ == "__main__":

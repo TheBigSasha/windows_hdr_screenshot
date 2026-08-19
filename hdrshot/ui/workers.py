@@ -11,7 +11,7 @@ import logging
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from ..core import color, pipeline
+from ..core import pipeline
 
 log = logging.getLogger(__name__)
 
@@ -22,8 +22,12 @@ class _Signals(QObject):
 
 
 class CaptureWorker(QRunnable):
-    """Grabs every display, enumerates them, and pre-renders SDR previews — all
-    off the main thread. Emits ``(caps, disps, previews)``."""
+    """Grab displays without a redundant full-frame CPU tone-map pass.
+
+    DXGI capture is native D3D11. The GUI obtains its selector image from the
+    Windows compositor after this grab, reserving FP16-to-SDR work for only the
+    selected result.
+    """
 
     def __init__(self, backend):
         super().__init__()
@@ -35,10 +39,7 @@ class CaptureWorker(QRunnable):
         try:
             caps = self.backend.capture_all()
             disps = self.backend.enumerate_displays()
-            white = {d.gdi_name: d.sdr_white_nits for d in disps}
-            previews = {name: color.scrgb_to_preview_u8(mc.linear, white.get(name, 80.0))
-                        for name, mc in caps.items()}
-            self.signals.finished.emit((caps, disps, previews))
+            self.signals.finished.emit((caps, disps))
         except Exception as e:  # pragma: no cover - surfaced to the GUI
             log.exception("capture worker failed")
             self.signals.error.emit(str(e))

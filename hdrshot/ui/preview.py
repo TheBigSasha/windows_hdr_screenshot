@@ -10,7 +10,7 @@ import os
 import subprocess
 
 import numpy as np
-from PySide6.QtCore import Qt, QThreadPool
+from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtGui import QGuiApplication, QImage, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -51,21 +51,28 @@ def _qimage_from_rgb(arr: np.ndarray) -> QImage:
 
 
 class PreviewWindow(QWidget):
-    def __init__(self, result: pipeline.CaptureResult, config=None, on_saved=None):
+    def __init__(self, result: pipeline.CaptureResult, config=None, on_saved=None,
+                 preview_image: QImage | None = None):
         super().__init__(None, Qt.Window)
         self.result = result
         self.config = config
         self.on_saved = on_saved
         self.default_dir = config.resolved_save_dir() if config else pipeline.default_save_dir()
         self.template = config.get("filename_template") if config else None
-        self._sdr_u8 = color.scrgb_to_preview_u8(result.linear, result.sdr_white_nits)
+        self._preview_image = (preview_image.copy() if preview_image is not None
+                               else _qimage_from_rgb(color.scrgb_to_preview_u8(
+                                   result.linear, result.sdr_white_nits)))
         self._saved_path: str | None = None
+        self._encode_worker: EncodeWorker | None = None
+        self._auto_save_started = False
 
         self.setWindowTitle("HDR Shot — Preview")
         self.setObjectName("preview")
         self.setMinimumWidth(560)
         self.setAttribute(Qt.WA_DeleteOnClose)   # closing frees the FP16 buffer
         self._build()
+        if config and config.get("auto_save"):
+            QTimer.singleShot(0, self._auto_save)
 
     # -- ui ---------------------------------------------------------------- #
     def _build(self):
@@ -94,7 +101,7 @@ class PreviewWindow(QWidget):
         badges.addWidget(lbl, 1)
         root.addLayout(badges)
 
-        pix = QPixmap.fromImage(_qimage_from_rgb(self._sdr_u8))
+        pix = QPixmap.fromImage(self._preview_image)
         self._thumb = QLabel()
         self._thumb.setAlignment(Qt.AlignCenter)
         self._thumb.setPixmap(pix.scaled(720, 460, Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -185,6 +192,8 @@ class PreviewWindow(QWidget):
             self._update_hint()
 
     def _save(self):
+        if self._encode_worker is not None:
+            return
         fid = self.combo.currentData()
         checked = validate_format(fid, allow_legacy=False)
         if not checked.selectable:
@@ -197,25 +206,38 @@ class PreviewWindow(QWidget):
                               gainmap_quality=gq, gainmap_downscale=gd)
         worker.signals.finished.connect(self._on_saved_ok)
         worker.signals.error.connect(self._on_saved_err)
+        self._encode_worker = worker
         QThreadPool.globalInstance().start(worker)
 
-    def _on_saved_ok(self, info: dict):
+    def _auto_save(self):
+        if self._auto_save_started:
+            return
+        self._auto_save_started = True
+        self._save()
+
+    def _on_saved_ok(self, info):
+        self._encode_worker = None
         self._set_saving(False)
-        info["peak_nits"] = self.result.stats.get("peak_nits", 0.0)
-        self._saved_path = info["path"]
+        # pipeline.save returns the immutable typed EncodeResult. Convert at the
+        # UI boundary before attaching presentation-only peak data; 0.4.0 tried
+        # to mutate the Mapping and crashed every successful save callback.
+        payload = info.to_dict() if hasattr(info, "to_dict") else dict(info)
+        payload["peak_nits"] = self.result.stats.get("peak_nits", 0.0)
+        self._saved_path = payload["path"]
         self.open_btn.setEnabled(True)
-        self.status.setText(f"Saved {os.path.basename(info['path'])}")
+        self.status.setText(f"Saved {os.path.basename(payload['path'])}")
         if self.config and self.config.get("copy_to_clipboard"):
             self._copy(quiet=True)
         if self.on_saved:
-            self.on_saved(info, self._sdr_u8)
+            self.on_saved(payload, self._preview_image)
 
     def _on_saved_err(self, msg: str):
+        self._encode_worker = None
         self._set_saving(False)
         self.status.setText(f"Save failed: {msg}")
 
     def _copy(self, quiet: bool = False):
-        QGuiApplication.clipboard().setImage(_qimage_from_rgb(self._sdr_u8))
+        QGuiApplication.clipboard().setImage(self._preview_image)
         if not quiet:
             self.status.setText("Copied SDR image to clipboard")
 

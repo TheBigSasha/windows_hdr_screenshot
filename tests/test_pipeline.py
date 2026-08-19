@@ -85,6 +85,14 @@ def test_buffer_region_crop_is_independent_copy():
     assert not np.shares_memory(res.linear, caps["A"].linear)
 
 
+def test_buffer_region_promotes_native_fp16_after_crop():
+    caps, disps = _single()
+    caps["A"].linear = caps["A"].linear.astype(np.float16)
+    result = pipeline.capture_buffer_region(caps, disps, "A", (10, 10, 40, 40))
+    assert result.linear.dtype == np.float32
+    assert result.linear.flags.c_contiguous
+
+
 def test_buffer_region_out_of_bounds_raises():
     caps, disps = _single()
     with pytest.raises(pipeline.RegionError):

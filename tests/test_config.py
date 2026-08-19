@@ -50,6 +50,14 @@ def test_resolved_save_dir_custom(tmp_path):
     assert c.resolved_save_dir() == target
 
 
+def test_existing_config_gains_automatic_save_default(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text('{"hotkey_region": "ctrl+alt+s"}', encoding="utf-8")
+    loaded = config.Config.load(str(path))
+    assert loaded.get("auto_save") is True
+    assert loaded.get("hotkey_region") == "ctrl+alt+s"
+
+
 # -- filename templates ----------------------------------------------------- #
 WHEN = datetime(2026, 7, 3, 15, 30, 45)
 

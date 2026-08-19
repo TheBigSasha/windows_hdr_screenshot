@@ -402,7 +402,10 @@ def capture_region(phys_rect: tuple[int, int, int, int],
         _, mc, (ix, iy, iw, ih) = hits[0]
         # .copy() (not ascontiguousarray): a full-width slice is already contiguous
         # and would alias — keeping the whole monitor buffer alive after release.
-        crop = mc.linear[iy - mc.y:iy - mc.y + ih, ix - mc.x:ix - mc.x + iw].copy()
+        crop = np.array(
+            mc.linear[iy - mc.y:iy - mc.y + ih, ix - mc.x:ix - mc.x + iw],
+            dtype=np.float32, order="C", copy=True,
+        )
         return CaptureResult(linear=crop, sdr_white_nits=white, display=disp,
                              region_phys=(ix, iy, iw, ih),
                              stats=color.hdr_stats(crop, white))
@@ -433,10 +436,9 @@ def capture_buffer_region(caps: dict, disps: list, gdi_name: str,
     disp = _display_for(disps, mc.gdi_name)
     white = disp.sdr_white_nits if disp else 80.0
     if buffer_rect is None:
-        # Whole screen: alias the source buffer (no wasteful full-res copy). The
-        # preview legitimately needs this display's pixels; callers releasing the
-        # capture dict still free every *other* monitor's buffer.
-        crop = mc.linear
+        # Whole screen: a float32 platform buffer stays zero-copy; the native
+        # Windows FP16 buffer is promoted once for analysis and encoding.
+        crop = mc.linear.astype(np.float32, copy=False)
         rect = (0, 0, mc.width, mc.height)
     else:
         bx, by, bw, bh = buffer_rect
@@ -444,7 +446,8 @@ def capture_buffer_region(caps: dict, disps: list, gdi_name: str,
         x1, y1 = min(mc.width, bx + bw), min(mc.height, by + bh)
         if x1 <= x0 or y1 <= y0:
             raise RegionError(f"selection {buffer_rect!r} outside buffer {mc.width}x{mc.height}")
-        crop = mc.linear[y0:y1, x0:x1].copy()   # independent copy, never an alias
+        crop = np.array(mc.linear[y0:y1, x0:x1], dtype=np.float32,
+                        order="C", copy=True)   # independent, encode-ready copy
         rect = (x0, y0, x1 - x0, y1 - y0)
     return CaptureResult(linear=crop, sdr_white_nits=white, display=disp,
                          region_phys=rect, stats=color.hdr_stats(crop, white))
@@ -457,9 +460,10 @@ def capture_display(disp: DisplayInfo, caps: dict | None = None,
     if mc is None:
         raise RegionError(f"no captured buffer for display {disp.gdi_name!r} "
                           f"(have: {', '.join(caps) or 'none'})")
-    return CaptureResult(linear=mc.linear, sdr_white_nits=disp.sdr_white_nits,
+    linear = mc.linear.astype(np.float32, copy=False)
+    return CaptureResult(linear=linear, sdr_white_nits=disp.sdr_white_nits,
                          display=disp, region_phys=(0, 0, mc.width, mc.height),
-                         stats=color.hdr_stats(mc.linear, disp.sdr_white_nits))
+                         stats=color.hdr_stats(linear, disp.sdr_white_nits))
 
 
 # --------------------------------------------------------------------------- #
