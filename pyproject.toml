@@ -32,13 +32,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gui = ["PySide6>=6.7"]                    # LGPL-3.0 — bundle as separate shared libs
+gui = ["PySide6>=6.10"]                   # LGPL-3.0 — bundle as separate shared libs
 exr = ["OpenEXR>=3.3"]                    # optional profile; resolve per target
 avif-sdr = ["pillow-avif-plugin>=1.4"]    # optional; 8-bit SDR AVIF
 heic = ["pillow-heif>=1.0"]              # x265/GPL — NOT bundled in binary releases
 avif-hdr = ["imagecodecs>=2025.11.11,<2027"]  # first CICP-capable release; ARM64 ABI3 wheel
 all = [
-    "PySide6>=6.7",
+    "PySide6>=6.10",
     "OpenEXR>=3.3",
     "pillow-avif-plugin>=1.4",
     "pillow-heif>=1.0",
