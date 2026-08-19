@@ -11,7 +11,7 @@ import platform
 import sys
 import time
 
-from PySide6.QtCore import Qt, QThreadPool, QTimer
+from PySide6.QtCore import QSize, Qt, QThreadPool, QTimer
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -95,6 +95,31 @@ def make_icon() -> QIcon:
     return QIcon(pm)
 
 
+def make_settings_icon(size: int = 24) -> QIcon:
+    """Draw a crisp settings cog instead of relying on a font glyph."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.Antialiasing)
+    center = size // 2
+    painter.translate(center, center)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor("#e8e8ea"))
+    tooth = max(3, size // 6)
+    radius = max(7, size // 2 - 2)
+    for angle in range(0, 360, 45):
+        painter.save()
+        painter.rotate(angle)
+        painter.drawRoundedRect(-tooth // 2, -radius, tooth, tooth + 3, 1.5, 1.5)
+        painter.restore()
+    painter.drawEllipse(-radius + 2, -radius + 2, (radius - 2) * 2, (radius - 2) * 2)
+    painter.setBrush(QColor("#1c1c1f"))
+    hole = max(2, size // 7)
+    painter.drawEllipse(-hole, -hole, hole * 2, hole * 2)
+    painter.end()
+    return QIcon(pm)
+
+
 class MainWindow(QWidget):
     def __init__(self, controller: HdrShotApp):
         super().__init__(None)
@@ -118,9 +143,11 @@ class MainWindow(QWidget):
         header.addStretch(1)
         self.pill = QLabel("…")
         header.addWidget(self.pill)
-        gear = QPushButton("⚙")
+        gear = QPushButton()
         gear.setObjectName("ghost")
         gear.setFixedWidth(40)
+        gear.setIcon(make_settings_icon())
+        gear.setIconSize(QSize(20, 20))
         gear.setToolTip("Preferences")
         gear.clicked.connect(self.controller.open_preferences)
         header.addWidget(gear)
