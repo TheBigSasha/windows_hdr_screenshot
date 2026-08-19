@@ -6,6 +6,12 @@ All notable changes to HDR Shot are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-18
+
+### Fixed
+- The post-public release verifier now passes the repository explicitly to
+  `gh release download`, so it works in the checkout-free publish job.
+
 ## [0.4.1] - 2026-08-18
 
 ### Added
