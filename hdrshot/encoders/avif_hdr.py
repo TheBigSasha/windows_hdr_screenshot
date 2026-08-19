@@ -93,7 +93,7 @@ def _assert_cicp(data: bytes) -> dict[str, int]:
         "color_primaries": CP_BT2020,
         "transfer_characteristics": TC_PQ,
         "matrix_coefficients": MC_BT2020_NCL,
-        "full_range_flag": 0,
+        "full_range_flag": 1,
     }
     actual = _read_nclx(data)
     if actual is None or actual != expected:
