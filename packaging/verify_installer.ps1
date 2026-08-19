@@ -47,8 +47,8 @@ if ($match.Groups["hash"].Value.ToLowerInvariant() -cne $actual) {
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $installDir = Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) "installed"
-& $installerPath --install-dir $installDir --no-launch
-if ($LASTEXITCODE -ne 0) { throw "installer exited with code $LASTEXITCODE" }
+$installerProcess = Start-Process -FilePath $installerPath -ArgumentList @("--install-dir", $installDir, "--no-launch") -Wait -PassThru
+if ($installerProcess.ExitCode -ne 0) { throw "installer exited with code $($installerProcess.ExitCode)" }
 
 $gui = Join-Path $installDir "HDRShot.exe"
 $cli = Join-Path $installDir "hdrshot-cli.exe"
@@ -58,6 +58,22 @@ foreach ($required in @($gui, $cli)) {
         throw "$([IO.Path]::GetFileName($required)) has the wrong PE architecture"
     }
 }
+$roamingAppData = if ($env:APPDATA) { $env:APPDATA } else { [Environment]::GetFolderPath("ApplicationData") }
+$shortcut = Join-Path $roamingAppData "Microsoft\\Windows\\Start Menu\\Programs\\HDR Shot.lnk"
+if (-not (Test-Path -LiteralPath $shortcut -PathType Leaf)) {
+    throw "Start Menu shortcut is missing: $shortcut"
+}
+$shell = New-Object -ComObject WScript.Shell
+$shortcutObject = $shell.CreateShortcut($shortcut)
+$shortcutTarget = [IO.Path]::GetFullPath($shortcutObject.TargetPath)
+if ($shortcutTarget -cne [IO.Path]::GetFullPath($gui)) {
+    throw "Start Menu shortcut target mismatch: $shortcutTarget"
+}
+$shortcutWorkingDirectory = [IO.Path]::GetFullPath($shortcutObject.WorkingDirectory)
+if ($shortcutWorkingDirectory -cne [IO.Path]::GetFullPath($installDir)) {
+    throw "Start Menu shortcut working directory mismatch: $shortcutWorkingDirectory"
+}
+
 $versionOutput = (& $cli --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $versionOutput -cne "hdrshot $ExpectedVersion") {
     throw "installed CLI version mismatch: $versionOutput"
@@ -100,5 +116,6 @@ try {
     architecture = $ExpectedArchitecture
     installed_gui = $gui
     installed_cli = $cli
+    start_menu_shortcut = $shortcut
 } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $OutputDirectory "installer-verification.json")
 Write-Output "verified installer $installerPath ($actual)"

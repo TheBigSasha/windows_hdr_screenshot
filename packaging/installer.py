@@ -69,20 +69,23 @@ def _safe_extract(archive: Path, destination: Path) -> None:
         zipped.extractall(destination)
 
 
-def _ps_quote(value: Path) -> str:
+def _ps_quote(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _create_start_menu_shortcut(gui: Path, install_dir: Path) -> None:
-    local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    shortcut = local_app_data / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "HDR Shot.lnk"
+def _create_start_menu_shortcut(gui: Path, install_dir: Path) -> Path:
+    app_data = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    shortcut = app_data / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "HDR Shot.lnk"
     shortcut.parent.mkdir(parents=True, exist_ok=True)
     script = (
         "$ws=New-Object -ComObject WScript.Shell;"
         f"$s=$ws.CreateShortcut({_ps_quote(shortcut)});"
         f"$s.TargetPath={_ps_quote(gui)};"
         f"$s.WorkingDirectory={_ps_quote(install_dir)};"
-        "$s.Save()"
+        f"$s.IconLocation={_ps_quote(f'{gui},0')};"
+        "$s.Description='HDR Shot';"
+        "$s.Save();"
+        f"if (-not (Test-Path -LiteralPath {_ps_quote(shortcut)} -PathType Leaf)) {{ exit 1 }}"
     )
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
@@ -91,7 +94,11 @@ def _create_start_menu_shortcut(gui: Path, install_dir: Path) -> None:
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if result.returncode:
-        print(f"warning: could not create Start Menu shortcut: {result.stderr.strip()}", file=sys.stderr)
+        details = (result.stdout + "\n" + result.stderr).strip()
+        raise RuntimeError(f"could not create Start Menu shortcut: {details}")
+    if not shortcut.is_file():
+        raise RuntimeError(f"Start Menu shortcut was not created: {shortcut}")
+    return shortcut
 
 
 def _stop_running_gui(target: Path) -> None:
@@ -178,6 +185,7 @@ def install(install_dir: Path | None, no_launch: bool) -> int:
     stage = target.parent / f".{target.name}.new-{uuid.uuid4()}"
     rollback = target.parent / f".{target.name}.rollback-{uuid.uuid4()}"
     old_moved = False
+    shortcut: Path | None = None
     try:
         extracted = temp_root / "expanded"
         extracted.mkdir()
@@ -193,14 +201,22 @@ def install(install_dir: Path | None, no_launch: bool) -> int:
             old_moved = True
         shutil.move(str(stage), str(target))
         stage = None
-        _create_start_menu_shortcut(target / "HDRShot.exe", target)
+        shortcut = _create_start_menu_shortcut(target / "HDRShot.exe", target)
         if not no_launch:
             subprocess.Popen([str(target / "HDRShot.exe")], cwd=target)
         print(f"HDR Shot {version} installed to {target}")
+        print(f"Start Menu shortcut: {shortcut}")
         return 0
     except Exception:
-        if old_moved and not target.exists() and rollback.exists():
-            shutil.move(str(rollback), str(target))
+        if old_moved:
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+            if rollback.exists():
+                shutil.move(str(rollback), str(target))
+        elif stage is None and target.exists():
+            if shortcut is not None and shortcut.exists():
+                shortcut.unlink()
+            shutil.rmtree(target, ignore_errors=True)
         raise
     finally:
         if stage is not None:
