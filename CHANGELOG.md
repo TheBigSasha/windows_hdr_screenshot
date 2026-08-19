@@ -6,6 +6,12 @@ All notable changes to HDR Shot are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-08-18
+
+### Fixed
+- Require the first ARM64 PySide6 wheel that ships Qt OpenGL bindings, so the
+  frozen HDR preview starts correctly in the native installer.
+
 ## [0.4.5] - 2026-08-18
 
 ### Changed
