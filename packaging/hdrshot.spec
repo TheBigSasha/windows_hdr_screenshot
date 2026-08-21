@@ -5,8 +5,7 @@ hiddenimports = (
     collect_submodules("hdrshot.encoders")
     + collect_submodules("hdrshot.backends")
     + ["hdrshot.agentcli", "hdrshot.codecs", "hdrshot.config",
-       "hdrshot.hotkeys", "hdrshot.startup", "hdrshot.ui.single_instance",
-       "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets"]
+       "hdrshot.hotkeys", "hdrshot.startup", "hdrshot.ui.single_instance"]
 )
 
 # Keep every optional provider out explicitly. The frozen capability manifest,

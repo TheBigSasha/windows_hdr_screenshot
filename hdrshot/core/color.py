@@ -139,11 +139,11 @@ def scrgb_to_pq_bt2020_u16(linear: np.ndarray, bit_depth: int = 10) -> np.ndarra
 
 
 def scrgb_to_pq_bt2020_rgba16f(linear: np.ndarray) -> np.ndarray:
-    """Pack scRGB into an RGBA16F BT.2020/PQ display texture.
+    """Pack scRGB into an RGBA16F BT.2020/PQ texture.
 
-    This is the upload format used by the GPU preview.  The alpha channel is
-    opaque and the returned array owns its storage so the GL upload remains
-    valid after the worker/capture buffers are released.
+    The alpha channel is opaque and the returned array owns its storage.
+    Presentation code must independently prove that its native output surface
+    is HDR before using these PQ values.
     """
     pq = scrgb_to_pq_bt2020_float(linear)
     rgba = np.empty((*pq.shape[:2], 4), dtype=np.float16)

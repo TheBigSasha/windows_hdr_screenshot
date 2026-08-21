@@ -437,14 +437,21 @@ def capture_all() -> dict[str, MonitorCapture]:
     try:
         with _CaptureSession():
             for adapter in _enum_adapters(factory):
+                outputs = _enum_outputs(adapter)
+                if not outputs:
+                    log.debug("skipping adapter with no outputs")
+                    com_release(adapter)
+                    continue
                 try:
                     device, ctx = _create_device(adapter)
                 except CaptureError as e:
                     log.warning("skipping adapter (device creation failed): %s", e)
+                    for output in outputs:
+                        com_release(output)
                     com_release(adapter)
                     continue
                 try:
-                    for output in _enum_outputs(adapter):
+                    for output in outputs:
                         try:
                             desc = _output_desc(output)
                             if not desc.AttachedToDesktop:

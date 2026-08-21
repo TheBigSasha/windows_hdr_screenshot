@@ -10,9 +10,8 @@ import os
 import subprocess
 
 import numpy as np
-from PySide6.QtCore import QRect, QRectF, QSize, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QColorSpace, QGuiApplication, QImage, QPixmap, QSurfaceFormat
-from PySide6.QtOpenGL import QOpenGLTexture, QOpenGLTextureBlitter, QOpenGLWindow
+from PySide6.QtCore import Qt, QThreadPool, QTimer
+from PySide6.QtGui import QGuiApplication, QImage, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -20,7 +19,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -52,118 +50,6 @@ def _qimage_from_rgb(arr: np.ndarray) -> QImage:
     return QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888).copy()
 
 
-class HDRPreviewWidget(QOpenGLWindow):
-    """GPU presentation of a captured scRGB buffer as BT.2100/PQ.
-
-    The old preview converted the capture to an 8-bit SDR ``QImage`` before
-    it ever reached Qt.  This native child window keeps the HDR signal in an
-    RGBA16F GPU texture and blits it into a BT.2100(PQ) surface.  The Qt
-    blitter supplies portable shaders for desktop OpenGL and ANGLE, while the
-    16-bit native swapchain request lets Windows map PQ values to an HDR
-    monitor.  Clipboard and SDR notification paths intentionally continue to
-    use ``_preview_image``.
-    """
-
-    render_failed = Signal(str)
-
-    def __init__(self, rgba16f: np.ndarray, parent=None):
-        fmt = QSurfaceFormat()
-        fmt.setRenderableType(QSurfaceFormat.OpenGL)
-        fmt.setRedBufferSize(16)
-        fmt.setGreenBufferSize(16)
-        fmt.setBlueBufferSize(16)
-        fmt.setAlphaBufferSize(16)
-        pq_space = getattr(QColorSpace.NamedColorSpace, "Bt2100Pq", None)
-        if pq_space is None:
-            raise RuntimeError("Qt 6.8 or newer is required for a BT.2100/PQ preview surface")
-        fmt.setColorSpace(QColorSpace(pq_space))
-        super().__init__(QOpenGLWindow.NoPartialUpdate, parent)
-        self.setFormat(fmt)
-        self._pixels = np.ascontiguousarray(rgba16f, dtype=np.float16)
-        self._texture: QOpenGLTexture | None = None
-        self._blitter: QOpenGLTextureBlitter | None = None
-        self._ready = False
-        self._failed = False
-        self.setMinimumSize(QSize(1, 1))
-
-    def _fail(self, exc: Exception) -> None:
-        self._failed = True
-        self._ready = False
-        self.render_failed.emit(str(exc))
-
-    def initializeGL(self):  # noqa: N802 - Qt virtual
-        try:
-            if self._texture is not None:
-                self._texture.destroy()
-            if self._blitter is not None:
-                self._blitter.destroy()
-            self._texture = QOpenGLTexture(QOpenGLTexture.Target2D)
-            h, w = self._pixels.shape[:2]
-            self._texture.setFormat(QOpenGLTexture.TextureFormat.RGBA16F)
-            self._texture.setSize(w, h)
-            self._texture.setMipLevels(1)
-            self._texture.allocateStorage(
-                QOpenGLTexture.PixelFormat.RGBA,
-                QOpenGLTexture.PixelType.Float16,
-            )
-            self._texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
-            self._texture.setMinificationFilter(QOpenGLTexture.Filter.Linear)
-            self._texture.setMagnificationFilter(QOpenGLTexture.Filter.Linear)
-            # A bytes snapshot is required because Qt queues the GL upload;
-            # retaining the NumPy array keeps the source alive for the frame.
-            self._texture.setData(
-                QOpenGLTexture.PixelFormat.RGBA,
-                QOpenGLTexture.PixelType.Float16,
-                self._pixels.tobytes(),
-            )
-            self._blitter = QOpenGLTextureBlitter()
-            if not self._blitter.create():
-                raise RuntimeError("Qt could not initialize its GPU texture blitter")
-            self._ready = True
-            self._failed = False
-            self.update()
-        except Exception as exc:  # pragma: no cover - driver-specific fallback
-            self._fail(exc)
-
-    def paintGL(self):  # noqa: N802 - Qt virtual
-        gl = self.context().functions()
-        gl.glClearColor(0.0, 0.0, 0.0, 1.0)
-        gl.glClear(0x00004000)  # GL_COLOR_BUFFER_BIT
-        if not self._ready or self._texture is None or self._blitter is None:
-            return
-        dpr = self.devicePixelRatioF()
-        width = max(1, round(self.width() * dpr))
-        height = max(1, round(self.height() * dpr))
-        gl.glViewport(0, 0, width, height)
-        target = QOpenGLTextureBlitter.targetTransform(
-            QRectF(0, 0, width, height), QRect(0, 0, width, height)
-        )
-        self._blitter.bind()
-        self._blitter.blit(
-            self._texture.textureId(), target,
-            QOpenGLTextureBlitter.Origin.OriginTopLeft,
-        )
-        self._blitter.release()
-
-    def release_resources(self):
-        """Release GPU objects while the context is still current when possible."""
-        if self._texture is not None:
-            self._texture.destroy()
-            self._texture = None
-        if self._blitter is not None:
-            self._blitter.destroy()
-            self._blitter = None
-        self._ready = False
-
-    def closeEvent(self, event):  # noqa: N802 - Qt virtual
-        self.makeCurrent()
-        try:
-            self.release_resources()
-        finally:
-            self.doneCurrent()
-        super().closeEvent(event)
-
-
 class PreviewWindow(QWidget):
     def __init__(self, result: pipeline.CaptureResult, config=None, on_saved=None,
                  preview_image: QImage | None = None):
@@ -176,14 +62,6 @@ class PreviewWindow(QWidget):
         self._preview_image = (preview_image.copy() if preview_image is not None
                                else _qimage_from_rgb(color.scrgb_to_preview_u8(
                                    result.linear, result.sdr_white_nits)))
-        self._hdr_rgba16f = (
-            color.scrgb_to_pq_bt2020_rgba16f(result.linear)
-            if result.hdr_capable_content else None
-        )
-        self._hdr_widget: HDRPreviewWidget | None = None
-        self._hdr_container: QWidget | None = None
-        self._thumb_stack: QStackedWidget | None = None
-        self._hdr_preview_error: str | None = None
         self._saved_path: str | None = None
         self._encode_worker: EncodeWorker | None = None
         self._auto_save_started = False
@@ -223,34 +101,13 @@ class PreviewWindow(QWidget):
         badges.addWidget(lbl, 1)
         root.addLayout(badges)
 
-        # Keep an SDR image for clipboard/toast compatibility, but put the
-        # captured HDR signal itself in the preview when the result contains
-        # highlights.  The GPU widget falls back to this SDR image if the
-        # platform cannot create a BT.2100/PQ surface.
-        self._thumb_stack = QStackedWidget()
-        self._thumb_stack.setObjectName("thumb")
-        if self._hdr_rgba16f is not None:
-            try:
-                self._hdr_widget = HDRPreviewWidget(self._hdr_rgba16f)
-                self._hdr_widget.render_failed.connect(self._on_hdr_render_failed)
-                self._hdr_container = QWidget.createWindowContainer(self._hdr_widget)
-                self._hdr_container.setMinimumHeight(300)
-                self._hdr_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                self._thumb_stack.addWidget(self._hdr_container)
-            except Exception as exc:  # pragma: no cover - Qt version/driver
-                self._hdr_preview_error = str(exc)
-
         pix = QPixmap.fromImage(self._preview_image)
         self._thumb = QLabel()
         self._thumb.setAlignment(Qt.AlignCenter)
         self._thumb.setPixmap(pix.scaled(720, 460, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         self._thumb.setObjectName("thumb")
         self._thumb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._thumb_stack.addWidget(self._thumb)
-        self._thumb_stack.setCurrentWidget(
-            self._hdr_container if self._hdr_container is not None else self._thumb
-        )
-        root.addWidget(self._thumb_stack)
+        root.addWidget(self._thumb)
 
         fr = QHBoxLayout()
         fr.addWidget(QLabel("Save as"))
@@ -285,15 +142,7 @@ class PreviewWindow(QWidget):
         for b in (self.copy_btn, self.open_btn, self.save_btn):
             br.addWidget(b)
         root.addLayout(br)
-        if self._hdr_preview_error:
-            self.status.setText("HDR GPU preview unavailable — showing SDR preview")
         self._update_hint()
-
-    def _on_hdr_render_failed(self, reason: str):
-        if self._thumb_stack is not None:
-            self._thumb_stack.setCurrentWidget(self._thumb)
-        if hasattr(self, "status"):
-            self.status.setText("HDR GPU preview unavailable — showing SDR preview")
 
     def _populate_formats(self):
         for fid, label, _ in FORMAT_ITEMS:

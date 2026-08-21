@@ -17,7 +17,7 @@ from hdrshot.config import DEFAULTS, Config  # noqa: E402
 from hdrshot.core.pipeline import CaptureResult  # noqa: E402
 from hdrshot.core.types import MonitorCapture  # noqa: E402
 from hdrshot.ui.overlay import Overlay  # noqa: E402
-from hdrshot.ui.preview import HDRPreviewWidget, PreviewWindow  # noqa: E402
+from hdrshot.ui.preview import PreviewWindow  # noqa: E402
 from hdrshot.ui.single_instance import SingleInstance, instance_name  # noqa: E402
 from hdrshot.ui.workers import CaptureWorker  # noqa: E402
 
@@ -66,18 +66,34 @@ def test_capture_worker_emits_raw_gpu_capture_without_cpu_preview():
     assert received == [({"DISPLAY": capture}, ["display-info"])]
 
 
-def test_hdr_preview_requests_pq_float_gpu_surface(qapp):
-    pixels = np.ones((4, 6, 4), dtype=np.float16)
-    widget = HDRPreviewWidget(pixels)
+def test_preview_avoids_unverified_hdr_surface_and_cpu_pq_conversion(qapp, monkeypatch):
+    from hdrshot.core import color
+
+    linear = np.full((24, 32, 3), 20.0, dtype=np.float32)
+    result = CaptureResult(
+        linear=linear,
+        sdr_white_nits=80.0,
+        display=None,
+        region_phys=(0, 0, 32, 24),
+        stats={
+            "peak_ratio": 20.0,
+            "peak_nits": 1600.0,
+            "hdr_pixel_fraction": 1.0,
+            "has_hdr": True,
+        },
+    )
+    native_preview = QImage(32, 24, QImage.Format.Format_RGB888)
+
+    def fail_cpu_preview(*_args, **_kwargs):
+        raise AssertionError("HDR preview conversion must stay off the CPU hot path")
+
+    monkeypatch.setattr(color, "scrgb_to_pq_bt2020_rgba16f", fail_cpu_preview)
+    window = PreviewWindow(result, preview_image=native_preview)
     try:
-        color_space = widget.format().colorSpace()
-        assert color_space.isValid()
-        assert color_space.description() == "BT.2100(PQ)"
-        assert widget.format().redBufferSize() == 16
-        assert widget.format().greenBufferSize() == 16
-        assert widget.format().blueBufferSize() == 16
+        assert not hasattr(window, "_hdr_widget")
+        assert window._thumb.pixmap() is not None
     finally:
-        widget.close()
+        window.close()
 
 
 def test_overlay_maps_native_preview_to_full_resolution_buffer(qapp):

@@ -6,6 +6,19 @@ All notable changes to HDR Shot are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- Remove the OpenGL HDR preview because Qt's requested BT.2100/PQ surface did
+  not produce a verified Windows HDR swapchain. The GUI now labels and presents
+  its preview honestly as SDR; encoded EXR and UltraHDR output is unchanged.
+
+### Performance
+- Remove the synchronous full-frame scRGB-to-PQ conversion and OpenGL child
+  window from preview creation. This preserves the native compositor preview
+  and asynchronous encoding work shipped in 0.4.1.
+- Enumerate adapter outputs before creating D3D11 devices, avoiding expensive
+  device creation on adapters that cannot capture a display. The display-owning
+  adapter and ARM single-adapter path are unchanged.
+
 ## [0.4.7] - 2026-08-18
 
 ### Changed
