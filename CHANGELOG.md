@@ -6,6 +6,8 @@ All notable changes to HDR Shot are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-08-21
+
 ### Fixed
 - Remove the OpenGL HDR preview because Qt's requested BT.2100/PQ surface did
   not produce a verified Windows HDR swapchain. The GUI now labels and presents
